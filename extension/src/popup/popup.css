@@ -121,3 +121,51 @@ label.radio input {
   margin-left: 18px;
   min-height: 0;
 }
+h3 {
+  font-size: 12px;
+  margin: 0 0 4px;
+}
+.group {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid #eee;
+}
+input.wide {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+}
+input:disabled,
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+.note.error,
+.note.warn-status {
+  color: #b42318;
+}
+.note.warn {
+  color: #93370d;
+}
+.hint {
+  margin-top: 10px;
+  padding: 8px;
+  border: 1px solid #fec84b;
+  border-radius: 6px;
+  background: #fffaeb;
+}
+.hint p {
+  margin: 0 0 6px;
+}
+.hint code {
+  flex: 1;
+  padding: 3px 6px;
+  border-radius: 4px;
+  background: #fff;
+  border: 1px solid #eee;
+  font-size: 12px;
+  user-select: all;
+}
+a {
+  color: #175cd3;
+}
