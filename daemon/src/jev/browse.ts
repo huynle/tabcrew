@@ -51,7 +51,8 @@ export class Limiter {
 }
 
 export interface JevRuntime {
-  readonly settings: ModelSettings;
+  /** Replaced when the popup changes settings; each browse reads it once when it starts. */
+  settings: ModelSettings;
   readonly limiter: Limiter;
 }
 

@@ -2,15 +2,17 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { V2Event } from "@tabcrew/shared/v2";
 import { ExtensionBridge } from "./bridge.js";
-import { Limiter } from "./jev/browse.js";
+import { Limiter, type JevRuntime } from "./jev/browse.js";
 import type { DaemonConfig } from "./config.js";
 import { DaemonError } from "./errors.js";
+import type { Env } from "./home.js";
 import { log } from "./log.js";
 import { McpHttpServer } from "./mcp/httpServer.js";
 import { closeSession, type ToolContext } from "./mcp/tools.js";
 import { ObservationCache } from "./observe.js";
 import { Scheduler } from "./scheduler.js";
 import { SessionRegistry, type Session } from "./sessions.js";
+import { SettingsService } from "./settings.js";
 import { ensureHome, ensureToken } from "./token.js";
 
 export interface DaemonOverrides {
@@ -24,6 +26,12 @@ export interface DaemonOverrides {
   readonly sweepIntervalMs?: number;
   /** Backoff base for model-call retries (default 500 ms). */
   readonly modelRetryBaseMs?: number;
+  /** Environment the settings service mirrors (default process.env). */
+  readonly env?: Env;
+  /** Variables loaded from <home>/env by `loadEnvFile` (so they are reported as "file", not "env"). */
+  readonly envFileVars?: readonly string[];
+  /** fetch for the OpenRouter key check (default global fetch). */
+  readonly fetch?: typeof fetch;
 }
 
 export interface RunningDaemon {
@@ -34,6 +42,8 @@ export interface RunningDaemon {
   readonly bridge: ExtensionBridge;
   readonly scheduler: Scheduler;
   readonly observations: ObservationCache;
+  /** Live Jev settings (replaced when the popup changes settings). */
+  readonly jev: JevRuntime;
   /** End idle sessions now, handing their tabs to the user (also runs on a timer). */
   sweepIdle(): Promise<void>;
   close(): Promise<void>;
@@ -98,18 +108,7 @@ export async function startDaemon(config: DaemonConfig, overrides: DaemonOverrid
     }
   };
 
-  const bridge = new ExtensionBridge({
-    token,
-    port: config.extensionPort,
-    offlineWaitMs: overrides.offlineWaitMs,
-    helloTimeoutMs: overrides.helloTimeoutMs,
-    pingIntervalMs: overrides.pingIntervalMs,
-    defaultRequestTimeoutMs: overrides.requestTimeoutMs,
-    sessions: () => registry.refs(),
-    onEvent,
-  });
-
-  const jev = {
+  const jev: JevRuntime = {
     settings: {
       jevModel: config.jevModel,
       textModel: config.textModel,
@@ -123,6 +122,26 @@ export async function startDaemon(config: DaemonConfig, overrides: DaemonOverrid
     },
     limiter: new Limiter(config.browseConcurrency),
   };
+  const settings = new SettingsService({
+    home: config.home,
+    env: overrides.env ?? process.env,
+    envFileVars: overrides.envFileVars ?? [],
+    fetch: overrides.fetch ?? fetch,
+    runtime: jev,
+  });
+
+  const bridge = new ExtensionBridge({
+    token,
+    port: config.extensionPort,
+    offlineWaitMs: overrides.offlineWaitMs,
+    helloTimeoutMs: overrides.helloTimeoutMs,
+    pingIntervalMs: overrides.pingIntervalMs,
+    defaultRequestTimeoutMs: overrides.requestTimeoutMs,
+    sessions: () => registry.refs(),
+    onEvent,
+    onExtRequest: (op, args) => settings.handle(op, args),
+  });
+
   const ctx: ToolContext = { registry, bridge, scheduler, observations, jev };
   const version = daemonVersion();
   const mcp = new McpHttpServer({
@@ -175,6 +194,7 @@ export async function startDaemon(config: DaemonConfig, overrides: DaemonOverrid
     bridge,
     scheduler,
     observations,
+    jev,
     sweepIdle,
     async close() {
       if (sweepTimer) clearInterval(sweepTimer);

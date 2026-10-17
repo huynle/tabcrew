@@ -3,14 +3,17 @@ import type { IncomingMessage } from "node:http";
 import type { AddressInfo } from "node:net";
 import {
   V2_PROTOCOL_VERSION,
+  v2IsExtOp,
   type V2DaemonFrame,
   type V2Event,
+  type V2ExtOp,
+  type V2ExtResponse,
   type V2Op,
   type V2OpMap,
   type V2SessionRef,
 } from "@tabcrew/shared/v2";
 import { WebSocket, WebSocketServer, type RawData } from "ws";
-import { DaemonError, fromWireError } from "./errors.js";
+import { DaemonError, fromWireError, toV2Error } from "./errors.js";
 import { extensionOriginAllowed, hostAllowed } from "./localhost.js";
 import { log } from "./log.js";
 import { safeEqual } from "./token.js";
@@ -41,6 +44,8 @@ export interface BridgeOptions {
   readonly sessions: () => readonly V2SessionRef[];
   readonly onEvent?: (event: V2Event) => void;
   readonly onConnect?: () => void;
+  /** Extension -> daemon requests (`ext_request`, popup settings). Throw a DaemonError to answer ok:false. */
+  readonly onExtRequest?: (op: V2ExtOp, args: unknown) => Promise<unknown>;
 }
 
 interface Pending {
@@ -198,7 +203,7 @@ export class ExtensionBridge {
         return;
       }
       if (socket !== this.active) return;
-      this.handleFrame(frame);
+      this.handleFrame(socket, frame);
     });
 
     socket.on("close", () => {
@@ -233,8 +238,11 @@ export class ExtensionBridge {
     for (const waiter of [...this.waiters]) waiter();
   }
 
-  private handleFrame(frame: Record<string, unknown>): void {
+  private handleFrame(socket: WebSocket, frame: Record<string, unknown>): void {
     switch (frame.type) {
+      case "ext_request":
+        if (typeof frame.id === "string" && frame.id.length <= 100) void this.answerExtRequest(socket, frame.id, frame.op, frame.args);
+        return;
       case "response": {
         const id = typeof frame.id === "string" ? frame.id : "";
         const entry = this.pending.get(id);
@@ -259,6 +267,20 @@ export class ExtensionBridge {
       default:
         return;
     }
+  }
+
+  /** Run an extension request (only reachable on the authenticated, active socket) and reply by id. */
+  private async answerExtRequest(socket: WebSocket, id: string, op: unknown, args: unknown): Promise<void> {
+    let response: V2ExtResponse;
+    try {
+      if (!v2IsExtOp(op)) throw new DaemonError("invalid_args", `unknown request: ${String(op).slice(0, 40)}`);
+      if (!this.options.onExtRequest) throw new DaemonError("internal", "extension requests are not supported");
+      const result = await this.options.onExtRequest(op, args ?? {});
+      response = { type: "ext_response", id, ok: true, result } as V2ExtResponse;
+    } catch (err) {
+      response = { type: "ext_response", id, ok: false, error: toV2Error(err) };
+    }
+    if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(response));
   }
 
   private failPending(socket: WebSocket, why: string): void {

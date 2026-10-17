@@ -15,7 +15,7 @@ export async function runDaemon(): Promise<void> {
   const loaded = loadEnvFile(home);
   if (loaded.length) log.info(`loaded ${loaded.length} variable(s) from ${join(home, "env")}`);
   const config = loadConfig();
-  const daemon = await startDaemon(config);
+  const daemon = await startDaemon(config, { envFileVars: loaded });
   let stopping = false;
   const stop = (signal: string) => {
     if (stopping) return;

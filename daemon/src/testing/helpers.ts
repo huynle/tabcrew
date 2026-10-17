@@ -10,6 +10,9 @@ import {
   type V2DaemonFrame,
   type V2Error,
   type V2Event,
+  type V2ExtOp,
+  type V2ExtOpMap,
+  type V2ExtResponse,
   type V2Request,
   type V2Snapshot,
   type V2TabInfo,
@@ -36,7 +39,8 @@ export async function startTestDaemon(
   overrides: DaemonOverrides = {},
   env: Record<string, string> = {},
 ): Promise<RunningDaemon> {
-  return startDaemon(testConfig(home, env), { offlineWaitMs: 300, ...overrides });
+  // The settings service reads this env, never the real process environment.
+  return startDaemon(testConfig(home, env), { offlineWaitMs: 300, env: { TABCREW_HOME: home, ...env }, ...overrides });
 }
 
 export function rawHttp(
@@ -100,6 +104,8 @@ export class FakeExtension {
   /** debug_logs result per `${tab_id}:${source}`. */
   readonly logs = new Map<string, unknown>();
   private nextTabId = 100;
+  private nextExtId = 1;
+  private readonly extWaiters = new Map<string, (response: V2ExtResponse) => void>();
   readonly closed: Promise<{ code: number }>;
 
   private constructor(readonly ws: WebSocket) {
@@ -132,6 +138,22 @@ export class FakeExtension {
     this.ws.close();
   }
 
+  /** Send an extension -> daemon request and wait for its `ext_response`. */
+  extRequest<K extends V2ExtOp>(op: K | string, args: V2ExtOpMap[K]["args"] | Record<string, unknown> = {}): Promise<V2ExtResponse<K>> {
+    const id = `x${this.nextExtId++}`;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.extWaiters.delete(id);
+        reject(new Error(`no ext_response for ${id}`));
+      }, 3000);
+      this.extWaiters.set(id, (response) => {
+        clearTimeout(timer);
+        resolve(response as V2ExtResponse<K>);
+      });
+      this.ws.send(JSON.stringify({ type: "ext_request", id, op, args }));
+    });
+  }
+
   /** Wait until at least `n` requests have arrived. */
   async waitForRequests(n: number, timeoutMs = 3000): Promise<void> {
     const start = Date.now();
@@ -148,6 +170,12 @@ export class FakeExtension {
     }
     if (frame.type === "ping") {
       if (this.respondToPings) this.ws.send(JSON.stringify({ type: "pong", t: frame.t }));
+      return;
+    }
+    if (frame.type === "ext_response") {
+      const waiter = this.extWaiters.get(frame.id);
+      this.extWaiters.delete(frame.id);
+      waiter?.(frame);
       return;
     }
     this.requests.push(frame);

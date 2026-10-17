@@ -369,3 +369,57 @@ describe("tools", () => {
     expect(r.ok === false && r.error.code).toBe("bad_session");
   });
 });
+
+describe("extension requests (popup settings)", () => {
+  const KEY = "sk-or-good-1234567890abcd";
+  const fakeFetch = (async (_url: unknown, init?: RequestInit) =>
+    new Response("{}", { status: new Headers(init?.headers).get("authorization") === `Bearer ${KEY}` ? 200 : 401 })) as typeof fetch;
+
+  it("answers settings_get with a redacted view, matched by id", async () => {
+    daemon = await startTestDaemon(home);
+    const ext = await connectExtension(daemon);
+    const response = await ext.extRequest("settings_get");
+    expect(response).toMatchObject({
+      type: "ext_response",
+      id: "x1",
+      ok: true,
+      result: { openrouter_api_key: { source: "unset", hint: null }, jev_model: { source: "default" } },
+    });
+  });
+
+  it("settings_set saves the key, never echoes it, and the next browse sees it", async () => {
+    daemon = await startTestDaemon(home, { fetch: fakeFetch });
+    const ext = await connectExtension(daemon);
+    expect(daemon.jev.settings.openrouterApiKey).toBeUndefined();
+    const response = await ext.extRequest("settings_set", { openrouter_api_key: KEY, jev_model: "a/jev" });
+    expect(response).toMatchObject({ ok: true, result: { updated: ["openrouter_api_key", "jev_model"], warnings: [] } });
+    expect(JSON.stringify(response)).not.toContain(KEY);
+    expect(daemon.jev.settings.openrouterApiKey).toBe(KEY);
+    expect(daemon.jev.settings.jevModel).toBe("a/jev");
+  });
+
+  it("answers errors as ok:false with a typed code (invalid key, unknown op, bad id ignored)", async () => {
+    daemon = await startTestDaemon(home, { fetch: fakeFetch });
+    const ext = await connectExtension(daemon);
+    expect(await ext.extRequest("settings_set", { openrouter_api_key: "sk-or-nope-00000000" })).toMatchObject({
+      ok: false,
+      error: { code: "invalid_args", message: expect.stringMatching(/rejected/) },
+    });
+    expect(await ext.extRequest("tab_list")).toMatchObject({ ok: false, error: { code: "invalid_args" } });
+    // A frame without a string id gets no answer and does not break the connection.
+    ext.send({ type: "ext_request", op: "settings_get", args: {} });
+    expect(await ext.extRequest("settings_get")).toMatchObject({ ok: true });
+  });
+
+  it("rejects ext_request before hello with 4401", async () => {
+    daemon = await startTestDaemon(home);
+    const ws = new WebSocket(`ws://127.0.0.1:${daemon.extensionPort}`);
+    await new Promise((r) => ws.once("open", r));
+    const closed = new Promise<number>((r) => ws.once("close", (code) => r(code)));
+    const replies: string[] = [];
+    ws.on("message", (d) => replies.push(d.toString()));
+    ws.send(JSON.stringify({ type: "ext_request", id: "x", op: "settings_get", args: {} }));
+    expect(await closed).toBe(CLOSE_BAD_HELLO);
+    expect(replies).toEqual([]);
+  });
+});

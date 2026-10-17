@@ -5,7 +5,8 @@ import { NEXT_ACTION, TARGET } from "./questions.js";
 
 export const DECISIONS_URL = "https://openrouter.ai/api/alpha/decisions";
 export const OPENROUTER_URL = "https://openrouter.ai/api/v1";
-export const MISSING_KEY_MESSAGE = "set OPENROUTER_API_KEY in ~/.tabcrew/env (npx tabcrew setup does this) and restart the daemon";
+export const MISSING_KEY_MESSAGE =
+  "no OpenRouter API key: ask the user to add one in the TabCrew extension popup (Advanced), or set OPENROUTER_API_KEY in ~/.tabcrew/env (npx tabcrew setup does this) and restart the daemon";
 
 /** Model configuration shared by the Decisions client and the text helper. */
 export interface ModelSettings {
