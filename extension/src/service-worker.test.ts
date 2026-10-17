@@ -189,3 +189,68 @@ describe("service worker pairing", () => {
     expect((await popupState()).status).toBe("unauthorized");
   });
 });
+
+describe("service worker popup settings", () => {
+  const KEY = "sk-or-good-1234567890abcd";
+  const view = {
+    openrouter_api_key: { source: "file", hint: "abcd", check: "valid" },
+    text_model_api_key: { source: "unset", hint: null },
+    jev_model: { value: "typesafe/jev-1.13", source: "default", default: "typesafe/jev-1.13" },
+    text_model: { value: "inception/mercury-2.5", source: "default", default: "inception/mercury-2.5" },
+    text_model_base_url: { value: null, source: "default", default: null },
+  };
+
+  function popup<T>(msg: unknown): Promise<T> {
+    return new Promise((resolve) => fake.chrome.runtime.onMessage.fire(msg, {}, (r) => resolve(r as T)));
+  }
+
+  /** Answer the next ext_request posted to the offscreen port. */
+  async function answer(port: FakePort, respond: (req: { id: string; op: string; args: unknown }) => unknown) {
+    await settle();
+    const req = port.messages<{ type: string; request: { id: string; op: string; args: unknown } }>().filter((m) => m.type === "ext_request").at(-1)!.request;
+    port.postMessage({ type: "ext_response", response: respond(req) });
+    return req;
+  }
+
+  it("v2:settings_get relays settings_get to the daemon", async () => {
+    await boot();
+    const port = offscreenConnects();
+    port.postMessage({ type: "status", status: "connected" });
+    await settle();
+    const result = popup({ type: "v2:settings_get" });
+    const req = await answer(port, (r) => ({ type: "ext_response", id: r.id, ok: true, result: view }));
+    expect(req).toMatchObject({ op: "settings_get", args: {} });
+    expect(await result).toEqual({ ok: true, settings: view, warnings: [] });
+  });
+
+  it("v2:settings_set relays the patch, returns warnings, and never stores the key", async () => {
+    await boot();
+    const port = offscreenConnects();
+    port.postMessage({ type: "status", status: "connected" });
+    await settle();
+    const result = popup({ type: "v2:settings_set", patch: { openrouter_api_key: KEY } });
+    const req = await answer(port, (r) => ({
+      type: "ext_response",
+      id: r.id,
+      ok: true,
+      result: { settings: view, updated: ["openrouter_api_key"], warnings: ["Could not reach OpenRouter"] },
+    }));
+    expect(req).toMatchObject({ op: "settings_set", args: { openrouter_api_key: KEY } });
+    expect(await result).toEqual({ ok: true, settings: view, warnings: ["Could not reach OpenRouter"] });
+    await settle();
+    const stored = JSON.stringify([fake.chrome.storage.local._data(), fake.chrome.storage.session._data()]);
+    expect(stored).not.toContain(KEY);
+  });
+
+  it("reports daemon errors and offline state as ok:false", async () => {
+    await boot();
+    expect(await popup({ type: "v2:settings_get" })).toEqual({ ok: false, error: expect.stringMatching(/not connected/) });
+    const port = offscreenConnects();
+    port.postMessage({ type: "status", status: "connected" });
+    await settle();
+    const result = popup({ type: "v2:settings_set", patch: { openrouter_api_key: "bad" } });
+    await answer(port, (r) => ({ type: "ext_response", id: r.id, ok: false, error: { code: "invalid_args", message: "OpenRouter rejected this API key" } }));
+    expect(await result).toEqual({ ok: false, error: "OpenRouter rejected this API key" });
+    expect(await popup({ type: "v2:settings_set" })).toEqual({ ok: false, error: expect.stringMatching(/patch/) });
+  });
+});

@@ -1,4 +1,4 @@
-import { V2_EXTENSION_PORT } from "@tabcrew/shared/v2";
+import { V2_EXTENSION_PORT, type V2SettingsPatch, type V2SettingsView } from "@tabcrew/shared/v2";
 
 /** chrome.storage.local keys (user settings). */
 export const TOKEN_KEY = "v2:token";
@@ -67,7 +67,10 @@ export type PopupRequest =
   | { type: "v2:show_session"; short_id: string }
   | { type: "v2:open_finished"; group_id: number }
   | { type: "v2:close_finished"; group_id: number }
-  | { type: "v2:close_all_finished" };
+  | { type: "v2:close_all_finished" }
+  /** Daemon settings (relayed to the daemon; the extension never stores them). */
+  | { type: "v2:settings_get" }
+  | { type: "v2:settings_set"; patch: V2SettingsPatch };
 
 export interface PopupSessionInfo {
   readonly short_id: string;
@@ -97,3 +100,7 @@ export interface PopupState {
 export type PopupStopResult = { ok: true } | { ok: false; error: string };
 export type PopupCloseResult = { ok: true; closed_tabs: number } | { ok: false; error: string };
 export type PopupActionResult = { ok: true } | { ok: false; error: string };
+/** Daemon settings for the popup: keys are redacted by the daemon (source + last 4 characters). */
+export type PopupSettingsResult =
+  | { ok: true; settings: V2SettingsView; warnings: string[] }
+  | { ok: false; error: string };

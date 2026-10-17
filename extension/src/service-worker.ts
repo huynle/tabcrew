@@ -5,6 +5,7 @@
  * All Chrome listeners are registered synchronously at top level (MV3 requirement).
  */
 
+import type { V2SettingsView } from "@tabcrew/shared/v2";
 import { CdpManager } from "./cdp.js";
 import {
   PORT_KEY,
@@ -13,6 +14,7 @@ import {
   type PopupActionResult,
   type PopupCloseResult,
   type PopupRequest,
+  type PopupSettingsResult,
   type PopupState,
   type PopupStopResult,
 } from "./config.js";
@@ -157,8 +159,32 @@ chrome.runtime.onMessage.addListener((message: PopupRequest, _sender, sendRespon
     void popupClose(() => tabs.closeAllFinished()).then(sendResponse);
     return true;
   }
+  if (message?.type === "v2:settings_get") {
+    void popupSettings(async () => ({ settings: await bridge.daemonRequest("settings_get", {}), warnings: [] })).then(sendResponse);
+    return true;
+  }
+  if (message?.type === "v2:settings_set") {
+    // The patch may hold an API key: relay it to the daemon only; never log or store it here.
+    const patch = message.patch;
+    void popupSettings(async () => {
+      if (!patch || typeof patch !== "object") throw new Error("settings_set needs a patch");
+      const { settings, warnings } = await bridge.daemonRequest("settings_set", patch);
+      return { settings, warnings };
+    }).then(sendResponse);
+    return true;
+  }
   return false;
 });
+
+async function popupSettings(
+  fn: () => Promise<{ settings: V2SettingsView; warnings: string[] }>,
+): Promise<PopupSettingsResult> {
+  try {
+    return { ok: true, ...(await fn()) };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
 
 async function stopFromPopup(shortId: string | null): Promise<PopupStopResult> {
   const sent = bridge.sendEvent({ type: "event", event: "stop", short_id: shortId });
