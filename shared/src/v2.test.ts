@@ -16,3 +16,15 @@ describe("v2 group titles", () => {
     expect(v2ParseGroupTitle(tricky)).toBeNull();
   });
 });
+
+describe("extension -> daemon requests", () => {
+  it("v2IsExtOp accepts only the known ops", async () => {
+    const { v2IsExtOp, V2_EXT_OPS } = await import("./v2.js");
+    expect([...V2_EXT_OPS].sort()).toEqual(["settings_get", "settings_set"]);
+    expect(v2IsExtOp("settings_get")).toBe(true);
+    expect(v2IsExtOp("settings_set")).toBe(true);
+    expect(v2IsExtOp("tab_list")).toBe(false);
+    expect(v2IsExtOp("__proto__")).toBe(false);
+    expect(v2IsExtOp(42)).toBe(false);
+  });
+});

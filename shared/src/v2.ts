@@ -172,6 +172,64 @@ export interface V2OpMap {
 export type V2Op = keyof V2OpMap;
 
 // ---------------------------------------------------------------------------
+// Extension -> daemon requests (the popup's settings). Answered with `ext_response`.
+// Keys never travel back in full: the daemon only reports where a key comes from and its last
+// 4 characters. The extension never stores what it sends here.
+// ---------------------------------------------------------------------------
+
+/** Where a secret comes from: the real process environment, `<home>/env`, or nowhere. */
+export type V2KeySource = "env" | "file" | "unset";
+/** Where a setting's effective value comes from (`file` = config.toml or `<home>/env`). */
+export type V2ValueSource = "env" | "file" | "default";
+
+export interface V2KeyView {
+  readonly source: V2KeySource;
+  /** Last 4 characters of the key, or null when unset. */
+  readonly hint: string | null;
+}
+
+export interface V2ValueView {
+  /** Effective value (null: not set, e.g. the text model base URL defaults to OpenRouter). */
+  readonly value: string | null;
+  readonly source: V2ValueSource;
+  readonly default: string | null;
+}
+
+export interface V2SettingsView {
+  readonly openrouter_api_key: V2KeyView & {
+    /** Result of the last check this daemon ran (null: not checked since it started). */
+    readonly check: "valid" | "unreachable" | null;
+  };
+  readonly text_model_api_key: V2KeyView;
+  readonly jev_model: V2ValueView;
+  readonly text_model: V2ValueView;
+  readonly text_model_base_url: V2ValueView;
+}
+
+/** Partial update. `null` removes a key / resets a setting to its default. */
+export interface V2SettingsPatch {
+  readonly openrouter_api_key?: string | null;
+  readonly text_model_api_key?: string | null;
+  readonly text_model_base_url?: string | null;
+  readonly jev_model?: string | null;
+  readonly text_model?: string | null;
+}
+
+export interface V2ExtOpMap {
+  settings_get: { args: Record<string, never>; result: V2SettingsView };
+  settings_set: {
+    args: V2SettingsPatch;
+    result: { settings: V2SettingsView; updated: string[]; warnings: string[] };
+  };
+}
+export type V2ExtOp = keyof V2ExtOpMap;
+export const V2_EXT_OPS: readonly V2ExtOp[] = ["settings_get", "settings_set"];
+
+export function v2IsExtOp(value: unknown): value is V2ExtOp {
+  return typeof value === "string" && (V2_EXT_OPS as readonly string[]).includes(value);
+}
+
+// ---------------------------------------------------------------------------
 // Frames
 // ---------------------------------------------------------------------------
 
@@ -216,6 +274,19 @@ export type V2Event =
   /** The user pressed Stop for one session, or for all (short_id null). */
   | { readonly type: "event"; readonly event: "stop"; readonly short_id: string | null };
 
+/** extension -> daemon: a request the daemon answers with `ext_response` (same id). */
+export interface V2ExtRequest<K extends V2ExtOp = V2ExtOp> {
+  readonly type: "ext_request";
+  readonly id: string;
+  readonly op: K;
+  readonly args: V2ExtOpMap[K]["args"];
+}
+
+/** daemon -> extension */
+export type V2ExtResponse<K extends V2ExtOp = V2ExtOp> =
+  | { readonly type: "ext_response"; readonly id: string; readonly ok: true; readonly result: V2ExtOpMap[K]["result"] }
+  | { readonly type: "ext_response"; readonly id: string; readonly ok: false; readonly error: V2Error };
+
 export interface V2Ping {
   readonly type: "ping";
   readonly t: number;
@@ -225,8 +296,8 @@ export interface V2Pong {
   readonly t: number;
 }
 
-export type V2ExtensionFrame = V2Hello | V2Response | V2Event | V2Pong;
-export type V2DaemonFrame = V2Welcome | V2Request | V2Ping;
+export type V2ExtensionFrame = V2Hello | V2Response | V2Event | V2Pong | V2ExtRequest;
+export type V2DaemonFrame = V2Welcome | V2Request | V2Ping | V2ExtResponse;
 
 export function v2GroupTitle(session: V2SessionRef): string {
   return `${session.label} · ${session.short_id}`;
