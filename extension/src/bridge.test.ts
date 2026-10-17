@@ -200,3 +200,36 @@ describe("Bridge", () => {
     expect(bridge.sendEvent({ type: "event", event: "stop", short_id: null })).toBe(true);
   });
 });
+
+describe("Bridge extension requests", () => {
+  const extRequest = (id: string) => ({ type: "ext_request" as const, id, op: "settings_get" as const, args: {} });
+
+  it("sends ext_request only when connected and hands ext_response to onExtResponse", async () => {
+    const onExtResponse = vi.fn();
+    const { bridge } = makeBridge({ current: { token: "t", port: 8771 } }, { onExtResponse });
+    expect(bridge.sendExtRequest(extRequest("x0"))).toBe(false);
+    const ws = await connected(bridge);
+    expect(bridge.sendExtRequest(extRequest("x1"))).toBe(true);
+    expect(ws.frames().at(-1)).toEqual(extRequest("x1"));
+    const response = { type: "ext_response", id: "x1", ok: true, result: { a: 1 } };
+    ws.serverSend(response);
+    expect(onExtResponse).toHaveBeenCalledWith(response);
+  });
+
+  it("fails ext requests still pending when the socket closes", async () => {
+    const onExtResponse = vi.fn();
+    const { bridge } = makeBridge({ current: { token: "t", port: 8771 } }, { onExtResponse });
+    const ws = await connected(bridge);
+    bridge.sendExtRequest(extRequest("x1"));
+    bridge.sendExtRequest(extRequest("x2"));
+    ws.serverSend({ type: "ext_response", id: "x1", ok: true, result: {} });
+    ws.serverClose(1006);
+    expect(onExtResponse).toHaveBeenLastCalledWith({
+      type: "ext_response",
+      id: "x2",
+      ok: false,
+      error: { code: "extension_offline", message: expect.stringMatching(/connection.*lost/i) },
+    });
+    expect(onExtResponse).toHaveBeenCalledTimes(2);
+  });
+});

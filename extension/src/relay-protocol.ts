@@ -3,7 +3,7 @@
  * the daemon WebSocket) and the service worker (which owns every chrome.* call).
  */
 
-import type { V2Event, V2Request, V2Response, V2Welcome } from "@tabcrew/shared/v2";
+import type { V2Event, V2ExtRequest, V2ExtResponse, V2Request, V2Response, V2Welcome } from "@tabcrew/shared/v2";
 import type { BridgeStatus } from "./config.js";
 
 export const BRIDGE_PORT_NAME = "v2-bridge";
@@ -13,6 +13,8 @@ export type ToServiceWorker =
   | { readonly type: "status"; readonly status: BridgeStatus }
   | { readonly type: "welcome"; readonly welcome: V2Welcome }
   | { readonly type: "request"; readonly request: V2Request }
+  /** The daemon's answer to an `ext_request` (or a local extension_offline failure). */
+  | { readonly type: "ext_response"; readonly response: V2ExtResponse }
   /** Sent on every daemon ping so the service worker's idle timer keeps resetting while connected. */
   | { readonly type: "keepalive" };
 
@@ -21,6 +23,8 @@ export type ToOffscreen =
   /** Offscreen documents cannot read chrome.storage, so the service worker pushes the config. */
   | { readonly type: "config"; readonly token: string | null; readonly port: number; readonly reconfigure: boolean }
   | { readonly type: "frame"; readonly frame: V2Response | V2Event }
+  /** A popup request for the daemon (settings). Never stored; answered with `ext_response`. */
+  | { readonly type: "ext_request"; readonly request: V2ExtRequest }
   /** Keepalive alarm: reconnect if nothing is connected or pending. */
   | { readonly type: "ensure" };
 

@@ -166,3 +166,28 @@ describe("OffscreenHost", () => {
     expect(host.stats()).toMatchObject({ sends: 2, slow_sends_over_200ms: 0 });
   });
 });
+
+describe("OffscreenHost extension requests", () => {
+  it("forwards ext_request from the service worker to the socket and the ext_response back", async () => {
+    const { sw, ws } = await connected();
+    const req = { type: "ext_request", id: "x1", op: "settings_get", args: {} };
+    sw().postMessage({ type: "ext_request", request: req });
+    await flush();
+    expect(ws.frames().at(-1)).toEqual(req);
+    const res = { type: "ext_response", id: "x1", ok: true, result: { a: 1 } };
+    ws.serverSend(res);
+    await flush();
+    expect(sw().messages().at(-1)).toEqual({ type: "ext_response", response: res });
+  });
+
+  it("answers at once with extension_offline when the socket is not connected", async () => {
+    const { sw } = setup();
+    await sendConfig(sw(), "secret-token"); // connecting, not welcomed
+    sw().postMessage({ type: "ext_request", request: { type: "ext_request", id: "x9", op: "settings_get", args: {} } });
+    await flush();
+    expect(sw().messages().at(-1)).toEqual({
+      type: "ext_response",
+      response: { type: "ext_response", id: "x9", ok: false, error: { code: "extension_offline", message: expect.any(String) } },
+    });
+  });
+});

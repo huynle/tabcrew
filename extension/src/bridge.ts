@@ -17,6 +17,8 @@ import {
   V2_PROTOCOL_VERSION,
   type V2DaemonFrame,
   type V2Event,
+  type V2ExtRequest,
+  type V2ExtResponse,
   type V2ExtensionFrame,
   type V2Request,
   type V2Response,
@@ -50,6 +52,8 @@ export interface BridgeDeps {
   onRequest(req: V2Request): void;
   /** Called once per connection after `welcome` (status is already `connected`). */
   onWelcome(welcome: V2Welcome): void;
+  /** The daemon's answer to an `ext_request`, or a local failure when the connection dropped. */
+  onExtResponse?(response: V2ExtResponse): void;
   /** Called after each ping has been answered. */
   onPing?(): void;
   onStatus?(status: BridgeStatus): void;
@@ -67,6 +71,8 @@ export class Bridge {
   private _status: BridgeStatus = "offline";
   /** Request ids received on the current socket and not answered yet. */
   private pending = new Set<string>();
+  /** ext_request ids sent on the current socket and not answered yet. */
+  private extPending = new Set<string>();
   private sendStats = { sends: 0, slow_sends_over_200ms: 0, max_send_ms: 0 };
 
   constructor(private readonly deps: BridgeDeps) {}
@@ -122,6 +128,14 @@ export class Bridge {
     return this.sendOn(this.socket, event);
   }
 
+  /** Send an extension -> daemon request. Returns false (nothing sent) if not connected. */
+  sendExtRequest(request: V2ExtRequest): boolean {
+    if (!this.isReady || !this.socket) return false;
+    if (!this.sendOn(this.socket, request)) return false;
+    this.extPending.add(request.id);
+    return true;
+  }
+
   /** Answer a request. Dropped (returns false) if it did not arrive on the current socket. */
   sendResponse(response: V2Response): boolean {
     if (!this.socket || !this.pending.delete(response.id)) return false;
@@ -164,6 +178,7 @@ export class Bridge {
       this.socket = null;
       this.welcomed = false;
       this.pending.clear();
+      this.failExtPending();
       if (ev.code === UNAUTHORIZED_CLOSE_CODE) {
         this.unauthorizedToken = token;
         this.setStatus("unauthorized");
@@ -194,6 +209,10 @@ export class Bridge {
         this.sendOn(socket, { type: "pong", t: frame.t });
         this.notify(() => this.deps.onPing?.());
         break;
+      case "ext_response":
+        if (typeof frame.id !== "string" || !this.extPending.delete(frame.id)) return;
+        this.notify(() => this.deps.onExtResponse?.(frame));
+        break;
       case "request":
         if (typeof frame.id !== "string") return;
         this.pending.add(frame.id);
@@ -201,6 +220,21 @@ export class Bridge {
         break;
       default:
         console.warn("[v2 bridge] unknown frame type:", (frame as { type?: unknown })?.type);
+    }
+  }
+
+  private failExtPending(): void {
+    const ids = [...this.extPending];
+    this.extPending.clear();
+    for (const id of ids) {
+      this.notify(() =>
+        this.deps.onExtResponse?.({
+          type: "ext_response",
+          id,
+          ok: false,
+          error: { code: "extension_offline", message: "connection to the TabCrew daemon was lost" },
+        }),
+      );
     }
   }
 
@@ -255,6 +289,7 @@ export class Bridge {
     this.socket = null;
     this.welcomed = false;
     this.pending.clear();
+    this.failExtPending();
     if (socket) {
       try {
         socket.close(1000, "reconfigure");

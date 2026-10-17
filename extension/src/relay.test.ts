@@ -173,3 +173,64 @@ describe("BridgeRelay", () => {
     expect(offscreen.messages().at(-1)).toEqual({ type: "config", token: "t", port: 8771, reconfigure: true });
   });
 });
+
+describe("BridgeRelay.daemonRequest", () => {
+  async function connectedRelay() {
+    const ctx = setup();
+    const offscreen = await ctx.attach();
+    offscreen.postMessage({ type: "status", status: "connected" });
+    await flush();
+    return { ...ctx, offscreen };
+  }
+  const extRequests = (offscreen: FakePort) =>
+    offscreen.messages<{ type: string; request?: { id: string; op: string; args: unknown } }>().filter((m) => m.type === "ext_request");
+
+  it("posts an ext_request and resolves with the matching ext_response result", async () => {
+    const { relay, offscreen } = await connectedRelay();
+    const pending = relay.daemonRequest("settings_set", { jev_model: "a/b" });
+    await flush();
+    const [sent] = extRequests(offscreen);
+    expect(sent.request).toMatchObject({ type: "ext_request", op: "settings_set", args: { jev_model: "a/b" } });
+    const id = sent.request!.id;
+    offscreen.postMessage({ type: "ext_response", response: { type: "ext_response", id: "other", ok: true, result: 0 } });
+    offscreen.postMessage({ type: "ext_response", response: { type: "ext_response", id, ok: true, result: { updated: ["jev_model"] } } });
+    await expect(pending).resolves.toEqual({ updated: ["jev_model"] });
+  });
+
+  it("rejects with the daemon's message on ok:false", async () => {
+    const { relay, offscreen } = await connectedRelay();
+    const pending = relay.daemonRequest("settings_get", {});
+    await flush();
+    const id = extRequests(offscreen)[0].request!.id;
+    offscreen.postMessage({
+      type: "ext_response",
+      response: { type: "ext_response", id, ok: false, error: { code: "invalid_args", message: "OpenRouter rejected this API key" } },
+    });
+    await expect(pending).rejects.toThrow("OpenRouter rejected this API key");
+  });
+
+  it("rejects at once when not connected", async () => {
+    const { relay, attach } = setup();
+    await expect(relay.daemonRequest("settings_get", {})).rejects.toThrow(/not connected/);
+    await attach();
+    await expect(relay.daemonRequest("settings_get", {})).rejects.toThrow(/not connected/);
+  });
+
+  it("times out after 15 s", async () => {
+    const { relay } = await connectedRelay();
+    const pending = relay.daemonRequest("settings_get", {});
+    const assertion = expect(pending).rejects.toThrow(/did not answer/);
+    await vi.advanceTimersByTimeAsync(14_999);
+    await vi.advanceTimersByTimeAsync(1);
+    await assertion;
+  });
+
+  it("fails pending requests when the connection drops", async () => {
+    const { relay, offscreen } = await connectedRelay();
+    const pending = relay.daemonRequest("settings_get", {});
+    const assertion = expect(pending).rejects.toThrow(/lost/);
+    offscreen.postMessage({ type: "status", status: "offline" });
+    await flush();
+    await assertion;
+  });
+});

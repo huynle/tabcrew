@@ -39,6 +39,7 @@ export class OffscreenHost {
       onWelcome: (welcome: V2Welcome) => this.post({ type: "welcome", welcome }),
       onPing: () => this.post({ type: "keepalive" }),
       onStatus: (status: BridgeStatus) => this.post({ type: "status", status }),
+      onExtResponse: (response) => this.post({ type: "ext_response", response }),
     });
   }
 
@@ -94,6 +95,19 @@ export class OffscreenHost {
       case "frame":
         if (message.frame.type === "response") this.bridge.sendResponse(message.frame);
         else this.bridge.sendEvent(message.frame);
+        break;
+      case "ext_request":
+        if (!this.bridge.sendExtRequest(message.request)) {
+          this.post({
+            type: "ext_response",
+            response: {
+              type: "ext_response",
+              id: message.request.id,
+              ok: false,
+              error: { code: "extension_offline", message: "not connected to the TabCrew daemon" },
+            },
+          });
+        }
         break;
       case "ensure":
         if (this.config) void this.bridge.ensureConnected();
