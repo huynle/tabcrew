@@ -34,6 +34,7 @@ Daemon (`127.0.0.1:8770` MCP over HTTP, `127.0.0.1:8771` extension WebSocket):
 - The daemon sends no CORS headers, so web pages cannot read its responses. MCP request bodies are capped at 4 MiB.
 - The token is 32 random bytes in `~/.tabcrew/token` (0600); `~/.tabcrew` is 0700; `env` (API keys) and `sessions.json` are 0600. The daemon refuses to load an `env` file readable by group or others, and ignores API keys placed in `config.toml`.
 - Logs carry session short IDs, tool names, step counts and timings only: never tokens, keys, session handles, page text, goals or typed values.
+- Settings over the extension socket: after a valid hello, the client may send `ext_request` frames to read and change the OpenRouter key, the text-model key and base URL (written to `env`) and `jev_model` / `text_model` (written to `config.toml`). This adds no new trust: any token holder can already run `browse` and could edit those files as the user. Keys are never returned in full (source and last 4 characters only); a new OpenRouter key is checked with OpenRouter before it is saved; values set in the daemon's real environment cannot be changed this way; both files are written atomically with mode 0600; logs name the changed fields only.
 
 Sessions:
 
@@ -49,6 +50,7 @@ Extension:
 - Default Manifest V3 content security policy, no content scripts, no `externally_connectable`, no web-accessible resources.
 - The snapshot skips password, file and hidden inputs. `debug_logs` builds each entry field by field: no headers, cookies, bodies or query strings, and never calls `Network.getResponseBody`.
 - The extension talks only to the daemon on `127.0.0.1`.
+- The extension holds no API keys and makes no model calls. A key typed into the popup is relayed to the daemon and never written to extension storage or logged.
 
 CLI:
 

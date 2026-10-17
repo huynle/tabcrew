@@ -39,7 +39,7 @@ This extension does nothing on its own. It connects only to the TabCrew daemon r
 
     npx tabcrew setup
 
-Setup installs the background service, pairs the extension automatically (no token to copy) and can add TabCrew to OpenCode and Claude Code for you. "browse" needs your own OpenRouter API key; everything else works without one.
+Setup installs the background service, pairs the extension automatically (no token to copy) and can add TabCrew to OpenCode and Claude Code for you. "browse" needs your own OpenRouter API key, which you can add during setup or later in the popup's Advanced section (it is stored by the local service, not in Chrome); everything else works without one.
 
 PRIVACY
 No accounts, no analytics, no tracking, no TabCrew servers. Page content goes only to the daemon on your own computer, and, if you use "browse", from there to the AI model provider you configured with your own key. Privacy policy: https://github.com/huynle/tabcrew/blob/main/docs/privacy.md

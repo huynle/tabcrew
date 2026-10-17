@@ -23,7 +23,7 @@ Then install the **TabCrew** browser extension. The Chrome Web Store listing is 
 npx tabcrew doctor
 ```
 
-`setup` asks for your OpenRouter key (hidden input; Enter skips it), installs the service, registers the pairing host, and asks before adding TabCrew to OpenCode and Claude Code. Rerun it any time: it is idempotent.
+`setup` asks for your OpenRouter key (hidden input; Enter skips it, and you can add it later in the extension popup under **Advanced**), installs the service, registers the pairing host, and asks before adding TabCrew to OpenCode and Claude Code. Rerun it any time: it is idempotent.
 
 ## Commands
 

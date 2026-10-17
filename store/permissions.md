@@ -38,7 +38,7 @@ Each agent session is shown as its own named, colored tab group so the user can 
 ### storage
 
 ```
-chrome.storage.local keeps the user's settings (where new agent tabs open, the local daemon port) and the access token for the user's own local daemon, obtained by pairing. chrome.storage.session keeps rebuildable runtime state (which tab groups belong to which session, finished groups listed in the popup). Nothing is synced or sent to any server.
+chrome.storage.local keeps the user's settings (where new agent tabs open, the local daemon port) and the access token for the user's own local daemon, obtained by pairing. API keys typed into the popup are not stored by the extension: they are passed to the local daemon, which keeps them on disk. chrome.storage.session keeps rebuildable runtime state (which tab groups belong to which session, finished groups listed in the popup). Nothing is synced or sent to any server.
 ```
 
 ### alarms
@@ -104,5 +104,5 @@ Source: `docs/privacy.md` in the repository.
 ## Notes for reviewers (optional "test instructions" field)
 
 ```
-TabCrew needs its local daemon to do anything. To test: on macOS with Node.js 20+, run "npx tabcrew setup" (press Enter to skip the OpenRouter key; everything except "browse" works without it). The popup then shows "connected". From a terminal, the daemon's MCP endpoint at http://127.0.0.1:8770/mcp (bearer token: "npx tabcrew token") accepts tool calls such as session_open, tab_create and observe; each session's tabs appear in their own window and tab group. Source: https://github.com/huynle/tabcrew
+TabCrew needs its local daemon to do anything. To test: on macOS with Node.js 20+, run "npx tabcrew setup" (press Enter to skip the OpenRouter key; everything except "browse" works without it, and a key can be added later in the popup's Advanced section). The popup then shows "connected". From a terminal, the daemon's MCP endpoint at http://127.0.0.1:8770/mcp (bearer token: "npx tabcrew token") accepts tool calls such as session_open, tab_create and observe; each session's tabs appear in their own window and tab group. Source: https://github.com/huynle/tabcrew
 ```

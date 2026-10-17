@@ -30,14 +30,15 @@ TabCrew lets AI agents that you run on your own computer (for example OpenCode o
 | Titles, URLs and group membership of tabs | To keep each agent inside its own tabs and show sessions in the popup | Stays in the browser, or goes to the daemon on your computer |
 | The daemon's access token | Fetched once from your computer by pairing (or typed by you) | Stored in the extension's local storage on your computer |
 | Your settings (tab placement, daemon port) | When you change them | Stored in the extension's local storage on your computer |
+| API keys and model names you enter under **Advanced** | When you click Save | Sent over the local connection to the daemon on your computer, which stores them in `~/.tabcrew/env` or `config.toml`. The extension never stores them; the daemon shows only a key's last 4 characters back |
 
 Agents can only reach tabs they opened themselves. Your own tabs are never read unless you give a tab to an agent, which TabCrew does not do on its own. Password, file and hidden form fields are excluded from what agents observe.
 
 ## What the daemon sends off your computer
 
-Only one thing, and only if you use it: when an agent calls `browse`, the daemon sends the current agent page's visible text and its list of controls, plus the agent's goal, to the model provider you set up (OpenRouter by default, or a provider you configure). It uses your own API key, which is stored in `~/.tabcrew/env` on your computer and never sent anywhere else. That provider's privacy policy applies to that data. If you do not add a key, `browse` is disabled and nothing is sent.
+Only one thing, and only if you use it: when an agent calls `browse`, the daemon sends the current agent page's visible text and its list of controls, plus the agent's goal, to the model provider you set up (OpenRouter by default, or a provider you configure). It uses your own API key, which is stored in `~/.tabcrew/env` on your computer (whether you entered it during setup or in the extension popup) and never sent anywhere else. That provider's privacy policy applies to that data. If you do not add a key, `browse` is disabled and nothing is sent.
 
-`tabcrew setup` and `tabcrew doctor --online` also make one free request to OpenRouter to check that your key is valid.
+`tabcrew setup`, `tabcrew doctor --online` and saving a key in the extension popup also make one free request to OpenRouter to check that your key is valid.
 
 ## What is stored on your computer
 

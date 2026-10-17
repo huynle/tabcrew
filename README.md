@@ -25,6 +25,8 @@ You need macOS, Node.js 20+, Google Chrome (or Chromium, Brave, Edge) and, for `
 
 3. **Check:** the extension pairs with the daemon automatically (no token to copy) and its popup shows **connected**. Run `npx tabcrew doctor` any time.
 
+4. **Add your OpenRouter key** if you skipped it during setup: open the popup, expand **Advanced** and paste it under **OpenRouter API key**. The models can be changed there too.
+
 Your agents (OpenCode, Claude Code, or any MCP client) can now call `session_open` and the other [tools](#tools). Remove everything with `npx tabcrew uninstall --purge`.
 
 TabCrew has no servers and no telemetry; see the [privacy policy](https://github.com/huynle/tabcrew/blob/main/docs/privacy.md) and [Security](#security).
@@ -32,7 +34,7 @@ TabCrew has no servers and no telemetry; see the [privacy policy](https://github
 ### What setup does
 
 1. Moves an existing `~/.chromeuse` into `~/.tabcrew` (leaving a `~/.chromeuse` symlink) and creates the token (`~/.tabcrew/token`, mode 600).
-2. Asks for your OpenRouter key (hidden input), checks it with a free OpenRouter call and stores it in `~/.tabcrew/env` (mode 600). Press Enter to skip; `browse` then reports `model_error` until a key is added.
+2. Asks for your OpenRouter key (hidden input), checks it with a free OpenRouter call and stores it in `~/.tabcrew/env` (mode 600). Press Enter to skip and add it later in the extension popup (**Advanced**); until then `browse` reports `model_error`.
 3. Copies the self-contained runtime (`daemon.mjs`, `pair-host.mjs`) into `~/.tabcrew/app/`, so nothing depends on the npx cache.
 4. Writes `~/Library/LaunchAgents/com.tabcrew.daemon.plist`, removes the old `com.chromeuse.daemon` job if present, starts the service and waits for `/health`.
 5. Registers the `com.tabcrew.pair` native messaging host for Chrome (and Chromium, Brave, Edge if installed).
@@ -70,6 +72,8 @@ extension service worker       (windows, tab groups, placement, pairing)
         ▼
 tabs
 ```
+
+The popup's settings requests (`ext_request` / `ext_response`) use the same socket: the extension asks, the daemon answers.
 
 Pairing: when the extension has no token (or the daemon rejects it with 4401), the service worker calls `chrome.runtime.sendNativeMessage("com.tabcrew.pair", {type: "get_token"})`. Chrome starts `~/.tabcrew/app/pair-host` only for extension IDs in the host manifest's `allowed_origins`; the host re-checks the caller, replies `{token}` and exits. While unpaired the popup shows **not paired: run npx tabcrew setup** and pairing is retried every minute. A token can still be entered by hand under the popup's **Advanced** section.
 
@@ -157,11 +161,17 @@ Every tool except `session_open` takes the `session` handle; tab tools also take
 
 ## Extension popup
 
-- Connection status (`not paired: run npx tabcrew setup` until pairing succeeds).
+- Connection status (`not paired: run npx tabcrew setup` until pairing succeeds). While the daemon is not connected, a box shows the `npx tabcrew setup` command (with a copy button) and a link to these install steps.
 - Placement setting: new agent tabs open in **their own window** (default, fastest) or in **my current window**. Agents never switch your current tab.
 - Active sessions, each with **Show** (bring its window to the front) and **Stop**, plus **Stop all**.
 - **Finished** list of handed-over sessions, with **Close** per session and **Close all finished**.
-- **Advanced**: manual token entry and the daemon port.
+- **Advanced** (needs a connected daemon):
+  - **OpenRouter API key** (for `browse`): status (not set, `Set …abcd`, or set by the environment and read-only), Save and Remove. Saving checks the key with a free OpenRouter call; a rejected key is not saved.
+  - **Models**: Jev model and text model; empty means the default.
+  - **Text model override** (optional): a separate API key and an OpenAI-compatible base URL (empty means OpenRouter).
+  - Manual token entry and the daemon port.
+
+  The popup sends these values over the local socket to the daemon, which stores them (see [Configuration](#configuration)) and uses them from the next `browse` on, without a restart. The extension never stores the keys, and the daemon only ever returns their last 4 characters.
 
 ## Configuration
 
@@ -190,6 +200,8 @@ The following settings come from the environment (or `~/.tabcrew/env`) only:
 | `TABCREW_HOME` | Home directory for token, config, env, logs and runtime | `~/.tabcrew` |
 | `TABCREW_LOG` | `debug` for verbose logs, `silent` for none | info |
 
+The extension popup (**Advanced**) edits a few of these for you: `OPENROUTER_API_KEY`, `TEXT_MODEL_API_KEY` and `TEXT_MODEL_BASE_URL` in `~/.tabcrew/env`, and `jev_model` / `text_model` in `config.toml` (only those lines change). A value set in the daemon's own environment (for example `JEV_MODEL` in the launchd job or your shell) wins over both files, so the popup shows it as read-only.
+
 ## Security
 
 - Both ports bind to `127.0.0.1` only.
@@ -197,7 +209,7 @@ The following settings come from the environment (or `~/.tabcrew/env`) only:
 - Requests with an `Origin` header not listed in `allowed_origins` are rejected, so web pages cannot call the daemon; the extension socket only accepts `chrome-extension://` origins. On both ports the `Host` header must be `127.0.0.1`, `localhost` or `[::1]` (DNS rebinding).
 - The extension ships no remote code; the page scripts it evaluates through the debugger are fixed constants in its bundle.
 - `debug_logs` never stores headers, cookies, bodies or query strings.
-- API keys are read from the environment or `~/.tabcrew/env` only; a key in `config.toml` is ignored with a warning.
+- API keys are read from the environment or `~/.tabcrew/env` only; a key in `config.toml` is ignored with a warning. Keys entered in the popup go over the token-authenticated local socket to the daemon, which writes them to `~/.tabcrew/env` (mode 600); the extension does not store them, and the daemon never sends a key back in full (only its last 4 characters).
 - The pairing host only answers TabCrew extension IDs (checked by Chrome via `allowed_origins` and again by the host) and never logs the token.
 - Agents act in your real, signed-in browser. Only connect agents you trust.
 
