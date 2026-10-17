@@ -8,6 +8,9 @@ import { log } from "./log.js";
 
 export { resolveHome } from "./home.js";
 
+export const DEFAULT_JEV_MODEL = "typesafe/jev-1.13";
+export const DEFAULT_TEXT_MODEL = "inception/mercury-2.5";
+
 export interface DaemonConfig {
   readonly home: string;
   readonly mcpPort: number;
@@ -96,8 +99,8 @@ export function loadConfig(env: Env = process.env): DaemonConfig {
       productValue(env, "BROWSE_CONCURRENCY", z.coerce.number().int().min(1).max(64)) ??
       file.browse_concurrency ??
       8,
-    jevModel: envValue(env, "JEV_MODEL", z.string().min(1)) ?? file.jev_model ?? "typesafe/jev-1.13",
-    textModel: envValue(env, "TEXT_MODEL", z.string().min(1)) ?? file.text_model ?? "inception/mercury-2.5",
+    jevModel: envValue(env, "JEV_MODEL", z.string().min(1)) ?? file.jev_model ?? DEFAULT_JEV_MODEL,
+    textModel: envValue(env, "TEXT_MODEL", z.string().min(1)) ?? file.text_model ?? DEFAULT_TEXT_MODEL,
     allowedOrigins:
       origins !== undefined
         ? origins
