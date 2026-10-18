@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import type { AddressInfo } from "node:net";
 import {
+  V2_FEATURE_SETTINGS,
   V2_PROTOCOL_VERSION,
   v2IsExtOp,
   type V2DaemonFrame,
@@ -46,6 +47,8 @@ export interface BridgeOptions {
   readonly onConnect?: () => void;
   /** Extension -> daemon requests (`ext_request`, popup settings). Throw a DaemonError to answer ok:false. */
   readonly onExtRequest?: (op: V2ExtOp, args: unknown) => Promise<unknown>;
+  /** Announced in `welcome` so the extension can tell an outdated service apart. */
+  readonly daemonVersion?: string;
 }
 
 interface Pending {
@@ -230,6 +233,8 @@ export class ExtensionBridge {
       type: "welcome",
       protocol: V2_PROTOCOL_VERSION,
       sessions: this.options.sessions().map((s) => ({ short_id: s.short_id, label: s.label })),
+      ...(this.options.daemonVersion ? { daemon_version: this.options.daemonVersion } : {}),
+      features: this.options.onExtRequest ? [V2_FEATURE_SETTINGS] : [],
     };
     socket.send(JSON.stringify(welcome));
     log.info(`extension: connected (version ${version})`);

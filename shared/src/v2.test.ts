@@ -28,3 +28,29 @@ describe("extension -> daemon requests", () => {
     expect(v2IsExtOp(42)).toBe(false);
   });
 });
+
+describe("service features in welcome", () => {
+  it("reads the daemon version and features from a new welcome", async () => {
+    const { v2ServiceInfo, V2_FEATURE_SETTINGS } = await import("./v2.js");
+    expect(V2_FEATURE_SETTINGS).toBe("settings");
+    expect(v2ServiceInfo({ type: "welcome", protocol: 2, sessions: [], daemon_version: "0.5.0", features: ["settings"] })).toEqual({
+      version: "0.5.0",
+      features: ["settings"],
+    });
+  });
+
+  it("treats an old welcome (no version, no features) as a service without features", async () => {
+    const { v2ServiceInfo } = await import("./v2.js");
+    expect(v2ServiceInfo({ type: "welcome", protocol: 2, sessions: [] })).toEqual({ version: null, features: [] });
+  });
+
+  it("ignores malformed fields", async () => {
+    const { v2ServiceInfo } = await import("./v2.js");
+    expect(v2ServiceInfo({ daemon_version: 5, features: "settings" })).toEqual({ version: null, features: [] });
+    expect(v2ServiceInfo({ daemon_version: "x".repeat(100), features: ["settings", 3, null, "y".repeat(100)] })).toEqual({
+      version: "x".repeat(40),
+      features: ["settings"],
+    });
+    expect(v2ServiceInfo(null)).toEqual({ version: null, features: [] });
+  });
+});

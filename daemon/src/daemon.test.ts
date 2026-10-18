@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { WebSocket } from "ws";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { CLOSE_BAD_HELLO, CLOSE_REPLACED } from "./bridge.js";
-import type { RunningDaemon } from "./daemon.js";
+import { CLOSE_BAD_HELLO, CLOSE_REPLACED, ExtensionBridge } from "./bridge.js";
+import { daemonVersion, type RunningDaemon } from "./daemon.js";
 import {
   call,
   FakeExtension,
@@ -172,6 +172,27 @@ describe("extension bridge", () => {
     await connectExtension(d);
     expect((await ext1.closed).code).toBe(CLOSE_REPLACED);
     expect(d.bridge.connected).toBe(true);
+  });
+
+  it("announces its version and the settings feature in welcome", async () => {
+    const { d } = await setup();
+    const ext = await connectExtension(d);
+    expect(ext.welcome?.daemon_version).toBe(daemonVersion());
+    expect(ext.welcome?.daemon_version).toMatch(/^\d+\.\d+\.\d+/);
+    expect(ext.welcome?.features).toEqual(["settings"]);
+  });
+
+  it("a bridge without an ext_request handler announces no settings feature", async () => {
+    const bridge = new ExtensionBridge({ token: "t".repeat(32), port: 0, sessions: () => [], daemonVersion: "9.9.9" });
+    const port = await bridge.start();
+    try {
+      const ext = await FakeExtension.connect(port, "t".repeat(32));
+      extensions.push(ext);
+      expect(ext.welcome?.daemon_version).toBe("9.9.9");
+      expect(ext.welcome?.features).toEqual([]);
+    } finally {
+      await bridge.close();
+    }
   });
 
   it("drops the connection after two missed pongs", async () => {

@@ -247,6 +247,32 @@ export interface V2Welcome {
   readonly protocol: typeof V2_PROTOCOL_VERSION;
   /** Sessions the daemon knows, so the extension can reconcile its tab groups. */
   readonly sessions: readonly V2SessionRef[];
+  /** The daemon's package version. Optional: daemons before 0.5 do not send it. */
+  readonly daemon_version?: string;
+  /**
+   * Optional capabilities beyond the base protocol (see `V2_FEATURE_*`). Missing means none, which is
+   * how the extension recognizes an older daemon (protocol 2 stays compatible for everything else).
+   */
+  readonly features?: readonly string[];
+}
+
+/** The daemon answers `ext_request` settings_get / settings_set (popup settings). */
+export const V2_FEATURE_SETTINGS = "settings";
+
+/** What the extension knows about the connected daemon, from its `welcome`. */
+export interface V2ServiceInfo {
+  readonly version: string | null;
+  readonly features: readonly string[];
+}
+
+/** Read the optional version and features of a `welcome` (old daemons send neither; bad values are ignored). */
+export function v2ServiceInfo(welcome: unknown): V2ServiceInfo {
+  const w = (welcome && typeof welcome === "object" ? welcome : {}) as { daemon_version?: unknown; features?: unknown };
+  const version = typeof w.daemon_version === "string" && w.daemon_version ? w.daemon_version.slice(0, 40) : null;
+  const features = Array.isArray(w.features)
+    ? w.features.filter((f): f is string => typeof f === "string" && f.length > 0 && f.length <= 40)
+    : [];
+  return { version, features };
 }
 
 /** daemon -> extension */

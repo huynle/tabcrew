@@ -130,6 +130,7 @@ export async function startDaemon(config: DaemonConfig, overrides: DaemonOverrid
     runtime: jev,
   });
 
+  const version = daemonVersion();
   const bridge = new ExtensionBridge({
     token,
     port: config.extensionPort,
@@ -140,10 +141,10 @@ export async function startDaemon(config: DaemonConfig, overrides: DaemonOverrid
     sessions: () => registry.refs(),
     onEvent,
     onExtRequest: (op, args) => settings.handle(op, args),
+    daemonVersion: version,
   });
 
   const ctx: ToolContext = { registry, bridge, scheduler, observations, jev };
-  const version = daemonVersion();
   const mcp = new McpHttpServer({
     ...ctx,
     token,
