@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { PopupState } from "../config.js";
-import { keyStatus, modelField, removeKeyPrompt, settingPatch, setupHint } from "./view.js";
+import { keyStatus, modelField, removeKeyPrompt, settingPatch, settingsAccess, setupHint } from "./view.js";
 
 describe("keyStatus", () => {
   it("describes a required key that is not set", () => {
@@ -93,8 +93,18 @@ describe("setupHint", () => {
     ...extra,
   });
 
-  it("is hidden when connected", () => {
+  it("is hidden when connected to a current (or not yet known) service", () => {
     expect(setupHint(state("connected"))).toBeNull();
+    expect(setupHint(state("connected", { service: null }))).toBeNull();
+    expect(setupHint(state("connected", { service: { version: "0.5.0", settings: true } }))).toBeNull();
+  });
+
+  it("asks to update an outdated service", () => {
+    expect(setupHint(state("connected", { service: { version: null, settings: false } }))).toEqual({
+      text: "Your TabCrew service is out of date. Update it to manage keys and models here:",
+      command: "npx tabcrew@latest setup",
+      detail: null,
+    });
   });
 
   it("asks to run setup when the service is missing, with the pairing error as detail", () => {
@@ -126,5 +136,34 @@ describe("removeKeyPrompt", () => {
       confirmLabel: "Confirm remove",
       warning: "Remove the override key? The text model will use the OpenRouter key. Click Confirm remove to continue.",
     });
+  });
+});
+
+describe("settingsAccess", () => {
+  const state = (status: PopupState["status"], service?: PopupState["service"]): PopupState => ({
+    status,
+    port: 8771,
+    token_set: true,
+    sessions: [],
+    finished: [],
+    service,
+  });
+
+  it("is ready only for a connected service with the settings feature", () => {
+    expect(settingsAccess(state("connected", { version: "0.5.0", settings: true }))).toBe("ready");
+  });
+
+  it("is outdated for a connected service without it", () => {
+    expect(settingsAccess(state("connected", { version: null, settings: false }))).toBe("outdated");
+  });
+
+  it("waits while connected but the service is not known yet", () => {
+    expect(settingsAccess(state("connected", null))).toBe("waiting");
+    expect(settingsAccess(state("connected"))).toBe("waiting");
+  });
+
+  it("is offline when not connected, whatever the last service was", () => {
+    expect(settingsAccess(state("offline", { version: null, settings: false }))).toBe("offline");
+    expect(settingsAccess(state("unauthorized"))).toBe("offline");
   });
 });

@@ -42,6 +42,8 @@ export function sessionRows(sessions: readonly PopupSessionInfo[]): SessionRow[]
 }
 
 export const SETUP_COMMAND = "npx tabcrew setup";
+/** `@latest` so npx does not reuse a cached old version. */
+export const UPDATE_COMMAND = "npx tabcrew@latest setup";
 
 export interface KeyStatus {
   readonly text: string;
@@ -103,9 +105,19 @@ export interface SetupHint {
   readonly detail: string | null;
 }
 
-/** The "install the local service" box, shown whenever the popup is not connected to the daemon. */
+/**
+ * The "install the local service" box, shown whenever the popup is not connected to the daemon, or
+ * the "update it" box when the connected service is too old for popup settings.
+ */
 export function setupHint(state: PopupState): SetupHint | null {
-  if (state.status === "connected") return null;
+  if (state.status === "connected") {
+    if (settingsAccess(state) !== "outdated") return null;
+    return {
+      text: "Your TabCrew service is out of date. Update it to manage keys and models here:",
+      command: UPDATE_COMMAND,
+      detail: null,
+    };
+  }
   const missing = state.status === "not_paired" || state.status === "needs_token" || !state.token_set;
   return {
     text: missing
@@ -114,6 +126,18 @@ export function setupHint(state: PopupState): SetupHint | null {
     command: SETUP_COMMAND,
     detail: state.status === "not_paired" ? (state.pairing_error ?? null) : null,
   };
+}
+
+/**
+ * Whether the popup can use the daemon settings: `waiting` while connected but the service's
+ * welcome is not known yet (settings are not requested then), `outdated` for a service without them.
+ */
+export type SettingsAccess = "ready" | "outdated" | "waiting" | "offline";
+
+export function settingsAccess(state: PopupState): SettingsAccess {
+  if (state.status !== "connected") return "offline";
+  if (!state.service) return "waiting";
+  return state.service.settings ? "ready" : "outdated";
 }
 
 export interface RemoveKeyPrompt {

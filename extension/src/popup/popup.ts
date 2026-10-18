@@ -13,7 +13,17 @@ import {
   type PopupStopResult,
 } from "../config.js";
 import { bindPlacementRadios } from "./placement.js";
-import { finishedRows, keyStatus, modelField, removeKeyPrompt, sessionRows, settingPatch, setupHint } from "./view.js";
+import {
+  finishedRows,
+  keyStatus,
+  modelField,
+  removeKeyPrompt,
+  sessionRows,
+  settingPatch,
+  settingsAccess,
+  setupHint,
+  type SettingsAccess,
+} from "./view.js";
 
 const STATUS_TEXT: Record<PopupStatus, string> = {
   connected: "connected",
@@ -57,7 +67,7 @@ async function refresh(): Promise<void> {
     $("setup-command").textContent = hint.command;
     $("setup-detail").textContent = hint.detail ?? "";
   }
-  setConnected(state.status === "connected");
+  setAccess(settingsAccess(state));
   const port = $<HTMLInputElement>("port");
   if (document.activeElement !== port) port.value = String(state.port);
 
@@ -195,11 +205,12 @@ $("close-all-finished").addEventListener("click", () => void closeFinished(null)
 
 // ---------------------------------------------------------------------------
 // Daemon settings (Advanced). Values go straight to the daemon, which keeps keys in
-// ~/.tabcrew/env; nothing here is stored in chrome.storage. Loaded when the popup connects and
-// after each save, not on every poll, so typing is never overwritten.
+// ~/.tabcrew/env; nothing here is stored in chrome.storage. Loaded when the popup connects to a
+// service that supports them and after each save, not on every poll, so typing is never
+// overwritten. An outdated service gets the update hint instead and is never asked.
 // ---------------------------------------------------------------------------
 
-let connected = false;
+let access: SettingsAccess = "offline";
 let settings: V2SettingsView | null = null;
 let saving = false;
 
@@ -209,10 +220,10 @@ function note(id: string, text: string, tone: "" | "error" | "warn" = ""): void 
   el.className = tone ? `note ${tone}` : "note";
 }
 
-function setConnected(next: boolean): void {
-  if (next === connected) return;
-  connected = next;
-  if (connected) void loadSettings();
+function setAccess(next: SettingsAccess): void {
+  if (next === access) return;
+  access = next;
+  if (access === "ready") void loadSettings();
   else renderSettings();
 }
 
@@ -261,11 +272,18 @@ function renderModel(inputId: string, view: V2SettingsView["jev_model"], fill: b
  * keeps what the user typed (after a failed save).
  */
 function renderSettings(fill = true): void {
-  const usable = connected && settings !== null && !saving;
+  const usable = access === "ready" && settings !== null && !saving;
   document.querySelectorAll<HTMLInputElement | HTMLButtonElement>(".setting").forEach((el) => (el.disabled = !usable));
-  if (!connected) {
-    note("openrouter-status", "Connect to the TabCrew service to change settings.");
+  if (access !== "ready") {
+    const why =
+      access === "outdated"
+        ? "Update the TabCrew service (see above) to change settings here."
+        : access === "waiting"
+          ? "Connecting…"
+          : "Connect to the TabCrew service to change settings.";
+    note("openrouter-status", why);
     note("text-key-status", "");
+    if (access === "outdated") note("settings-note", "");
     return;
   }
   if (!settings || saving) return;
