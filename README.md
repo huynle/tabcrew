@@ -173,6 +173,8 @@ Every tool except `session_open` takes the `session` handle; tab tools also take
 
   The popup sends these values over the local socket to the daemon, which stores them (see [Configuration](#configuration)) and uses them from the next `browse` on, without a restart. The extension never stores the keys, and the daemon only ever returns their last 4 characters.
 
+  If the installed service is too old for these settings, the popup says so, shows `npx tabcrew@latest setup` to update it and disables the settings; sessions and the connection controls keep working.
+
 ## Configuration
 
 The daemon reads `~/.tabcrew/config.toml` (or `$TABCREW_HOME/config.toml`). Environment variables override it. The old `CHROMEUSE_*` names are still read when the `TABCREW_*` variable is unset (deprecated).
