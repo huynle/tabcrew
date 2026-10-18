@@ -3,6 +3,7 @@ import { FakePort, FakeSocket, createPortPair, flush } from "../test/fakes.js";
 import { OffscreenHost, PORT_RECONNECT_MS } from "./host.js";
 
 const session = { short_id: "abcd1234", label: "agent" };
+const WELCOME = { type: "welcome", protocol: 2, sessions: [], daemon_version: "0.5.0", features: ["settings"] };
 
 /** `sw` is the service worker's end of the current port. */
 function setup() {
@@ -30,7 +31,7 @@ async function connected() {
   await sendConfig(ctx.sw(), "secret-token");
   const ws = FakeSocket.instances.at(-1)!;
   ws.serverOpen();
-  ws.serverSend({ type: "welcome", protocol: 2, sessions: [] });
+  ws.serverSend(WELCOME);
   await flush();
   return { ...ctx, ws };
 }
@@ -63,7 +64,7 @@ describe("OffscreenHost", () => {
       { type: "status", status: "offline" },
       { type: "status", status: "connecting" },
       { type: "status", status: "connected" },
-      { type: "welcome", welcome: { type: "welcome", protocol: 2, sessions: [] } },
+      { type: "welcome", welcome: WELCOME },
     ]);
   });
 
@@ -138,12 +139,26 @@ describe("OffscreenHost", () => {
     await vi.advanceTimersByTimeAsync(PORT_RECONNECT_MS);
     expect(swEnds).toHaveLength(2);
     await flush();
-    expect(swEnds[1]!.messages()).toEqual([{ type: "status", status: "connected" }]);
+    // The new service worker also learns what the daemon supports (it missed the welcome).
+    expect(swEnds[1]!.messages()).toEqual([
+      { type: "status", status: "connected" },
+      { type: "service", service: { version: "0.5.0", features: ["settings"] } },
+    ]);
 
     // The socket was untouched; requests flow over the new port.
     ws.serverSend({ type: "request", id: "r9", op: "tab_list", session, args: {} });
     await flush();
     expect(swEnds[1]!.messages().at(-1)).toMatchObject({ type: "request", request: { id: "r9" } });
+  });
+
+  it("does not replay a service after the socket dropped", async () => {
+    const { swEnds, ws } = await connected();
+    ws.serverClose(1006);
+    await flush();
+    swEnds[0]!.disconnect();
+    await vi.advanceTimersByTimeAsync(PORT_RECONNECT_MS);
+    await flush();
+    expect(swEnds.at(-1)!.messages().some((m) => (m as { type: string }).type === "service")).toBe(false);
   });
 
   it("reopens the port immediately when a request arrives while it is down", async () => {
@@ -154,6 +169,7 @@ describe("OffscreenHost", () => {
     expect(swEnds).toHaveLength(2);
     expect(swEnds[1]!.messages()).toEqual([
       { type: "status", status: "connected" },
+      { type: "service", service: { version: "0.5.0", features: ["settings"] } },
       { type: "request", request: { type: "request", id: "r1", op: "tab_list", session, args: {} } },
     ]);
     await vi.advanceTimersByTimeAsync(PORT_RECONNECT_MS * 4);

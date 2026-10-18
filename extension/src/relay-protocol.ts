@@ -3,7 +3,7 @@
  * the daemon WebSocket) and the service worker (which owns every chrome.* call).
  */
 
-import type { V2Event, V2ExtRequest, V2ExtResponse, V2Request, V2Response, V2Welcome } from "@tabcrew/shared/v2";
+import type { V2Event, V2ExtRequest, V2ExtResponse, V2Request, V2Response, V2ServiceInfo, V2Welcome } from "@tabcrew/shared/v2";
 import type { BridgeStatus } from "./config.js";
 
 export const BRIDGE_PORT_NAME = "v2-bridge";
@@ -12,6 +12,8 @@ export const BRIDGE_PORT_NAME = "v2-bridge";
 export type ToServiceWorker =
   | { readonly type: "status"; readonly status: BridgeStatus }
   | { readonly type: "welcome"; readonly welcome: V2Welcome }
+  /** Sent when the port (re)opens while connected: a restarted service worker missed the welcome. */
+  | { readonly type: "service"; readonly service: V2ServiceInfo }
   | { readonly type: "request"; readonly request: V2Request }
   /** The daemon's answer to an `ext_request` (or a local extension_offline failure). */
   | { readonly type: "ext_response"; readonly response: V2ExtResponse }

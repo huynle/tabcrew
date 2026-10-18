@@ -7,7 +7,7 @@
  * request forwarded to the dead service worker simply gets no response (the daemon times it out).
  */
 
-import type { V2Request, V2Welcome } from "@tabcrew/shared/v2";
+import { v2ServiceInfo, type V2Request, type V2ServiceInfo, type V2Welcome } from "@tabcrew/shared/v2";
 import { Bridge, type SocketLike } from "../bridge.js";
 import type { BridgeConfig, BridgeStatus } from "../config.js";
 import type { BridgeStats, PortLike, ToOffscreen, ToServiceWorker } from "../relay-protocol.js";
@@ -28,6 +28,8 @@ export class OffscreenHost {
   private portTimer: ReturnType<typeof setTimeout> | null = null;
   private config: BridgeConfig | null = null;
   private configWaiters: ((config: BridgeConfig) => void)[] = [];
+  /** From the current connection's welcome; replayed to a restarted service worker. */
+  private service: V2ServiceInfo | null = null;
 
   constructor(private readonly deps: OffscreenHostDeps) {
     this.bridge = new Bridge({
@@ -36,9 +38,15 @@ export class OffscreenHost {
       extensionVersion: deps.extensionVersion,
       now: deps.now,
       onRequest: (request: V2Request) => this.post({ type: "request", request }),
-      onWelcome: (welcome: V2Welcome) => this.post({ type: "welcome", welcome }),
+      onWelcome: (welcome: V2Welcome) => {
+        this.service = v2ServiceInfo(welcome);
+        this.post({ type: "welcome", welcome });
+      },
       onPing: () => this.post({ type: "keepalive" }),
-      onStatus: (status: BridgeStatus) => this.post({ type: "status", status }),
+      onStatus: (status: BridgeStatus) => {
+        if (status !== "connected") this.service = null;
+        this.post({ type: "status", status });
+      },
       onExtResponse: (response) => this.post({ type: "ext_response", response }),
     });
   }
@@ -77,6 +85,7 @@ export class OffscreenHost {
     });
     // A (re)started service worker knows nothing: tell it where the socket stands.
     this.postOn(port, { type: "status", status: this.bridge.status });
+    if (this.bridge.status === "connected" && this.service) this.postOn(port, { type: "service", service: this.service });
   }
 
   private schedulePortReconnect(): void {

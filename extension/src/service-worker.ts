@@ -129,6 +129,7 @@ chrome.runtime.onMessage.addListener((message: PopupRequest, _sender, sendRespon
         pairing_error: unpaired ? pairing.lastError : null,
         sessions,
         finished,
+        service: bridge.status === "connected" ? bridge.service : null,
       };
       sendResponse(state);
     });

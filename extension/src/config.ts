@@ -87,6 +87,14 @@ export interface PopupFinishedInfo {
   readonly tab_count: number;
 }
 
+/** The connected TabCrew service, from its `welcome`. */
+export interface ServiceInfo {
+  /** Daemon version; null for services before 0.5, which do not announce it. */
+  readonly version: string | null;
+  /** The service answers popup settings requests. */
+  readonly settings: boolean;
+}
+
 export interface PopupState {
   readonly status: PopupStatus;
   readonly port: number;
@@ -95,6 +103,8 @@ export interface PopupState {
   readonly pairing_error?: string | null;
   readonly sessions: readonly PopupSessionInfo[];
   readonly finished: readonly PopupFinishedInfo[];
+  /** Null while not connected (or before the service's welcome arrived). */
+  readonly service?: ServiceInfo | null;
 }
 
 export type PopupStopResult = { ok: true } | { ok: false; error: string };

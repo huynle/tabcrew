@@ -200,6 +200,16 @@ describe("service worker popup settings", () => {
     text_model_base_url: { value: null, source: "default", default: null },
   };
 
+  const WELCOME_SETTINGS = { type: "welcome", protocol: 2, sessions: [], daemon_version: "0.5.0", features: ["settings"] };
+  const WELCOME_OLD = { type: "welcome", protocol: 2, sessions: [] };
+
+  function connectedTo(welcome: unknown): FakePort {
+    const port = offscreenConnects();
+    port.postMessage({ type: "status", status: "connected" });
+    port.postMessage({ type: "welcome", welcome });
+    return port;
+  }
+
   function popup<T>(msg: unknown): Promise<T> {
     return new Promise((resolve) => fake.chrome.runtime.onMessage.fire(msg, {}, (r) => resolve(r as T)));
   }
@@ -214,8 +224,7 @@ describe("service worker popup settings", () => {
 
   it("v2:settings_get relays settings_get to the daemon", async () => {
     await boot();
-    const port = offscreenConnects();
-    port.postMessage({ type: "status", status: "connected" });
+    const port = connectedTo(WELCOME_SETTINGS);
     await settle();
     const result = popup({ type: "v2:settings_get" });
     const req = await answer(port, (r) => ({ type: "ext_response", id: r.id, ok: true, result: view }));
@@ -225,8 +234,7 @@ describe("service worker popup settings", () => {
 
   it("v2:settings_set relays the patch, returns warnings, and never stores the key", async () => {
     await boot();
-    const port = offscreenConnects();
-    port.postMessage({ type: "status", status: "connected" });
+    const port = connectedTo(WELCOME_SETTINGS);
     await settle();
     const result = popup({ type: "v2:settings_set", patch: { openrouter_api_key: KEY } });
     const req = await answer(port, (r) => ({
@@ -245,12 +253,34 @@ describe("service worker popup settings", () => {
   it("reports daemon errors and offline state as ok:false", async () => {
     await boot();
     expect(await popup({ type: "v2:settings_get" })).toEqual({ ok: false, error: expect.stringMatching(/not connected/) });
-    const port = offscreenConnects();
-    port.postMessage({ type: "status", status: "connected" });
+    const port = connectedTo(WELCOME_SETTINGS);
     await settle();
     const result = popup({ type: "v2:settings_set", patch: { openrouter_api_key: "bad" } });
     await answer(port, (r) => ({ type: "ext_response", id: r.id, ok: false, error: { code: "invalid_args", message: "OpenRouter rejected this API key" } }));
     expect(await result).toEqual({ ok: false, error: "OpenRouter rejected this API key" });
     expect(await popup({ type: "v2:settings_set" })).toEqual({ ok: false, error: expect.stringMatching(/patch/) });
+  });
+
+  it("tells the popup about the service and refuses settings at once when it is too old", async () => {
+    await boot();
+    expect((await popupState()).service).toBeNull();
+    const port = connectedTo(WELCOME_OLD);
+    await settle();
+    expect((await popupState()).service).toEqual({ version: null, settings: false });
+    const tooOld = { ok: false, error: "Your TabCrew service is too old for settings here. Update it: npx tabcrew@latest setup" };
+    expect(await popup({ type: "v2:settings_get" })).toEqual(tooOld);
+    expect(await popup({ type: "v2:settings_set", patch: { jev_model: "a/b" } })).toEqual(tooOld);
+    await settle();
+    expect(port.messages<{ type: string }>().filter((m) => m.type === "ext_request")).toEqual([]);
+  });
+
+  it("reports a current service in the popup state and clears it on disconnect", async () => {
+    await boot();
+    const port = connectedTo(WELCOME_SETTINGS);
+    await settle();
+    expect((await popupState()).service).toEqual({ version: "0.5.0", settings: true });
+    port.postMessage({ type: "status", status: "offline" });
+    await settle();
+    expect((await popupState()).service).toBeNull();
   });
 });

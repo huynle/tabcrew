@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { V2Request } from "@tabcrew/shared/v2";
 import { OpError } from "./errors.js";
-import { BridgeRelay, RECHECK_OFFSCREEN_MS, type RelayDeps } from "./relay.js";
+import { BridgeRelay, RECHECK_OFFSCREEN_MS, SERVICE_TOO_OLD_ERROR, type RelayDeps } from "./relay.js";
 import { FakePort, createPortPair, flush } from "./test/fakes.js";
 
 const session = { short_id: "abcd1234", label: "agent" };
@@ -232,5 +232,64 @@ describe("BridgeRelay.daemonRequest", () => {
     offscreen.postMessage({ type: "status", status: "offline" });
     await flush();
     await assertion;
+  });
+});
+
+describe("BridgeRelay service features", () => {
+  const welcome = (extra: Record<string, unknown> = {}) => ({ type: "welcome", protocol: 2, sessions: [], ...extra });
+  const extRequests = (offscreen: FakePort) => offscreen.messages<{ type: string }>().filter((m) => m.type === "ext_request");
+
+  async function connectedRelay(w: Record<string, unknown> | null) {
+    const ctx = setup();
+    const offscreen = await ctx.attach();
+    offscreen.postMessage({ type: "status", status: "connected" });
+    if (w) offscreen.postMessage({ type: "welcome", welcome: w });
+    await flush();
+    return { ...ctx, offscreen };
+  }
+
+  it("is null until a welcome arrives", async () => {
+    const { relay } = await connectedRelay(null);
+    expect(relay.service).toBeNull();
+  });
+
+  it("an old welcome (no features) means no settings, and settings requests fail at once without being sent", async () => {
+    const { relay, offscreen } = await connectedRelay(welcome());
+    expect(relay.service).toEqual({ version: null, settings: false });
+    await expect(relay.daemonRequest("settings_get", {})).rejects.toThrow(SERVICE_TOO_OLD_ERROR);
+    await expect(relay.daemonRequest("settings_set", { jev_model: "a/b" })).rejects.toThrow(SERVICE_TOO_OLD_ERROR);
+    await flush();
+    expect(extRequests(offscreen)).toEqual([]);
+    expect(SERVICE_TOO_OLD_ERROR).toBe("Your TabCrew service is too old for settings here. Update it: npx tabcrew@latest setup");
+  });
+
+  it("a welcome with the settings feature relays settings requests", async () => {
+    const { relay, offscreen } = await connectedRelay(welcome({ daemon_version: "0.5.0", features: ["settings"] }));
+    expect(relay.service).toEqual({ version: "0.5.0", settings: true });
+    void relay.daemonRequest("settings_get", {}).catch(() => undefined);
+    await flush();
+    expect(extRequests(offscreen)).toHaveLength(1);
+  });
+
+  it("takes the service replayed by the offscreen document after a service worker restart", async () => {
+    const { relay, offscreen } = await connectedRelay(null);
+    offscreen.postMessage({ type: "service", service: { version: "0.5.0", features: ["settings"] } });
+    await flush();
+    expect(relay.service).toEqual({ version: "0.5.0", settings: true });
+  });
+
+  it("forgets the service when the connection drops or the port disconnects", async () => {
+    const { relay, offscreen } = await connectedRelay(welcome({ features: ["settings"] }));
+    offscreen.postMessage({ type: "status", status: "offline" });
+    await flush();
+    expect(relay.service).toBeNull();
+
+    offscreen.postMessage({ type: "status", status: "connected" });
+    offscreen.postMessage({ type: "welcome", welcome: welcome({ features: ["settings"] }) });
+    await flush();
+    expect(relay.service?.settings).toBe(true);
+    offscreen.disconnect();
+    await flush();
+    expect(relay.service).toBeNull();
   });
 });
