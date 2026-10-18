@@ -89,7 +89,7 @@ export interface PopupFinishedInfo {
 
 /** The connected TabCrew service, from its `welcome`. */
 export interface ServiceInfo {
-  /** Daemon version; null for services before 0.5, which do not announce it. */
+  /** Daemon version; null for older services (0.4 and earlier), which do not announce it. */
   readonly version: string | null;
   /** The service answers popup settings requests. */
   readonly settings: boolean;

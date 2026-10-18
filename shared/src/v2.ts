@@ -247,7 +247,7 @@ export interface V2Welcome {
   readonly protocol: typeof V2_PROTOCOL_VERSION;
   /** Sessions the daemon knows, so the extension can reconcile its tab groups. */
   readonly sessions: readonly V2SessionRef[];
-  /** The daemon's package version. Optional: daemons before 0.5 do not send it. */
+  /** The daemon's package version. Optional: older daemons (0.4 and earlier) do not send it. */
   readonly daemon_version?: string;
   /**
    * Optional capabilities beyond the base protocol (see `V2_FEATURE_*`). Missing means none, which is
