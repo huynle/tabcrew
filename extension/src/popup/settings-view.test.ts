@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { PopupState } from "../config.js";
-import { keyStatus, modelField, settingPatch, setupHint } from "./view.js";
+import { keyStatus, modelField, removeKeyPrompt, settingPatch, setupHint } from "./view.js";
 
 describe("keyStatus", () => {
   it("describes a required key that is not set", () => {
@@ -110,5 +110,21 @@ describe("setupHint", () => {
     });
     expect(setupHint(state("needs_token", { token_set: false }))?.text).toBe("TabCrew needs its local service. In a terminal run:");
     expect(setupHint(state("unauthorized"))?.command).toBe("npx tabcrew setup");
+  });
+});
+
+describe("removeKeyPrompt", () => {
+  it("warns that removing the OpenRouter key disables browse", () => {
+    expect(removeKeyPrompt("openrouter_api_key")).toEqual({
+      confirmLabel: "Confirm remove",
+      warning: "Remove your OpenRouter key? browse will stop working. Click Confirm remove to continue.",
+    });
+  });
+
+  it("explains that removing the override falls back to the OpenRouter key", () => {
+    expect(removeKeyPrompt("text_model_api_key")).toEqual({
+      confirmLabel: "Confirm remove",
+      warning: "Remove the override key? The text model will use the OpenRouter key. Click Confirm remove to continue.",
+    });
   });
 });

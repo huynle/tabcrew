@@ -115,3 +115,17 @@ export function setupHint(state: PopupState): SetupHint | null {
     detail: state.status === "not_paired" ? (state.pairing_error ?? null) : null,
   };
 }
+
+export interface RemoveKeyPrompt {
+  readonly confirmLabel: string;
+  readonly warning: string;
+}
+
+/** Second-click confirmation shown before a key is removed. */
+export function removeKeyPrompt(field: "openrouter_api_key" | "text_model_api_key"): RemoveKeyPrompt {
+  const what =
+    field === "openrouter_api_key"
+      ? "Remove your OpenRouter key? browse will stop working."
+      : "Remove the override key? The text model will use the OpenRouter key.";
+  return { confirmLabel: "Confirm remove", warning: `${what} Click Confirm remove to continue.` };
+}

@@ -13,7 +13,7 @@ import {
   type PopupStopResult,
 } from "../config.js";
 import { bindPlacementRadios } from "./placement.js";
-import { finishedRows, keyStatus, modelField, sessionRows, settingPatch, setupHint } from "./view.js";
+import { finishedRows, keyStatus, modelField, removeKeyPrompt, sessionRows, settingPatch, setupHint } from "./view.js";
 
 const STATUS_TEXT: Record<PopupStatus, string> = {
   connected: "connected",
@@ -311,7 +311,28 @@ function bindKey(ids: KeyControls, field: "openrouter_api_key" | "text_model_api
     const checking = field === "openrouter_api_key" ? "Checking the key with OpenRouter…" : "Saving…";
     if (await saveSettings({ [field]: value }, noteId, "Saved. The next browse uses it.", checking)) input.value = "";
   });
-  $(ids.remove).addEventListener("click", () => void saveSettings({ [field]: null }, noteId, "Removed."));
+  const remove = $<HTMLButtonElement>(ids.remove);
+  const idleLabel = remove.textContent ?? "Remove";
+  let armed: ReturnType<typeof setTimeout> | undefined;
+  const disarm = () => {
+    clearTimeout(armed);
+    armed = undefined;
+    remove.textContent = idleLabel;
+  };
+  remove.addEventListener("click", () => {
+    if (armed === undefined) {
+      const prompt = removeKeyPrompt(field);
+      remove.textContent = prompt.confirmLabel;
+      note(noteId, prompt.warning, "warn");
+      armed = setTimeout(() => {
+        disarm();
+        note(noteId, "");
+      }, 5000);
+      return;
+    }
+    disarm();
+    void saveSettings({ [field]: null }, noteId, "Removed.");
+  });
 }
 
 bindKey(OPENROUTER_KEY, "openrouter_api_key", "openrouter-note");
