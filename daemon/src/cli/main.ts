@@ -2,6 +2,7 @@ import { ensureToken } from "../token.js";
 import { migrateDefaultHome } from "../home.js";
 import { doctor } from "./doctor.js";
 import { tabcrewPaths } from "./paths.js";
+import { runMcp } from "./mcp.js";
 import { installAll, setup } from "./setup.js";
 import type { System } from "./system.js";
 import { uninstall } from "./uninstall.js";
@@ -15,6 +16,10 @@ commands:
                 --from-source <repo>   run from a built checkout (development)
   doctor      check the installation   (--online also validates the OpenRouter key)
   token       print the auth token
+  mcp         MCP stdio server for hub mode (locked-down Chrome; no service, no ~/.tabcrew)
+                --port N               extension port for a newly started hub (default 8775)
+                --idle-minutes N       a new hub exits N minutes after its last client (default 10)
+                reset-pin              forget the hub pin, then "Trust this hub" in the popup
   update      reinstall the runtime from this package and restart the service
   uninstall   remove the service, pairing host and runtime
                 --purge                also delete token, env, sessions and logs
@@ -37,6 +42,8 @@ const ALLOWED: Record<string, readonly string[]> = {
   token: [],
   update: ["--from-source"],
   uninstall: ["--purge", "--yes", "-y"],
+  // Parsed by parseMcpArgs (values, a subcommand, and errors that must stay off stdout).
+  mcp: ["--port", "--idle-minutes", "reset-pin", "--help", "-h"],
 };
 
 function parseFlags(command: string, args: readonly string[]): Flags | string {
@@ -70,6 +77,14 @@ export async function cliMain(argv: readonly string[], sys: System): Promise<num
   if (!(command in ALLOWED)) {
     sys.out(`unknown command: ${command}\n\n${CLI_USAGE}`);
     return 2;
+  }
+  if (command === "mcp") {
+    // stdout is the MCP channel here: runMcp writes only relayed bytes to it (diagnostics -> stderr).
+    return runMcp(rest, {
+      pathOptions: { env: sys.env, home: sys.homedir, uid: sys.uid, platform: sys.platform },
+      runtimeDir: sys.runtimeDir,
+      out: sys.out,
+    });
   }
   const flags = parseFlags(command, rest);
   if (typeof flags === "string") {
