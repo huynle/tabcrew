@@ -31,7 +31,8 @@ import { ensureOffscreenDocument } from "./offscreen-client.js";
 import { handleRequest } from "./ops.js";
 import { Pairing } from "./pairing.js";
 import { BRIDGE_PORT_NAME } from "./relay-protocol.js";
-import { BridgeRelay, modelNotConfigured } from "./relay.js";
+import { handleModelCall } from "./model/proxy.js";
+import { BridgeRelay } from "./relay.js";
 import { PageController } from "./snapshot/controller.js";
 import { StoppedSessions } from "./stopped.js";
 import { TabManager } from "./tabs.js";
@@ -77,8 +78,8 @@ const bridge: BridgeRelay = new BridgeRelay({
         .catch(() => false);
     }
   },
-  // Replaced by the model provider proxy (hub mode); until then every call is model_not_configured.
-  handleModelCall: modelNotConfigured,
+  // Hub mode: the popup's model provider settings; the key never leaves the extension.
+  handleModelCall,
   // Fires storage.onChanged, which re-pushes the (now confirmed) pin without forcing a reconnect.
   onHubPinStored: async (secret) => void (await confirmHubPin(secret)),
 });

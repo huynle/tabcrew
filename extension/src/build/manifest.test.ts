@@ -20,6 +20,14 @@ describe("extension manifest", () => {
     expect(source.key).toBeUndefined();
   });
 
+  it("asks for no host access up front, only optional access for the model provider origin", () => {
+    expect(source.host_permissions).toBeUndefined();
+    expect(source.optional_host_permissions).toEqual(["https://*/*", "http://localhost/*", "http://127.0.0.1/*"]);
+    const store = buildManifest(source, { kind: "store" });
+    expect(store.optional_host_permissions).toEqual(source.optional_host_permissions);
+    expect(store.host_permissions).toBeUndefined();
+  });
+
   it("dev builds carry the public key whose ID is the dev ID the pairing host allows", () => {
     const dev = buildManifest(source, { kind: "dev", key: devKey });
     expect(dev.key).toBe(devKey);
