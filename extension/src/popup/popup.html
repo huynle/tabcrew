@@ -13,12 +13,16 @@
 
     <div id="setup-hint" class="hint" hidden>
       <p id="setup-text"></p>
-      <div class="row">
+      <div id="setup-row" class="row">
         <code id="setup-command">npx tabcrew setup</code>
         <button id="copy-setup" title="Copy the command">Copy</button>
       </div>
       <p id="setup-detail" class="note"></p>
-      <p class="note">
+      <div id="trust-row" class="row" hidden>
+        <button id="trust-hub" title="Pair this browser with the running TabCrew hub">Trust this hub</button>
+        <span id="trust-note" class="note"></span>
+      </div>
+      <p class="note daemon-only">
         Then reopen this popup.
         <a href="https://github.com/huynle/tabcrew#readme" target="_blank" rel="noopener noreferrer">Install guide</a>
       </p>
@@ -55,7 +59,39 @@
       <summary>Advanced</summary>
       <p id="settings-note" class="note"></p>
 
-      <div class="group">
+      <div id="provider-group" class="group hub-only" hidden>
+        <h3>Model provider (for browse)</h3>
+        <label for="provider-preset">Provider</label>
+        <select id="provider-preset" class="wide"></select>
+        <label for="provider-base-url">Base URL (OpenAI-compatible)</label>
+        <input id="provider-base-url" class="wide" type="url" autocomplete="off" spellcheck="false" placeholder="https://…/v1" />
+        <p id="provider-base-url-note" class="note"></p>
+        <label for="provider-key">API key</label>
+        <p id="provider-key-status" class="note"></p>
+        <input id="provider-key" class="wide" type="password" autocomplete="off" spellcheck="false" placeholder="paste key" />
+        <label>Headers (optional)</label>
+        <div id="provider-headers"></div>
+        <button id="add-header" title="Add a request header, e.g. OpenAI-Organization">+ Header</button>
+        <label for="provider-decision-model">Decision model</label>
+        <input id="provider-decision-model" class="wide" type="text" list="provider-models" autocomplete="off" spellcheck="false" />
+        <label for="provider-text-model">Text model</label>
+        <input id="provider-text-model" class="wide" type="text" list="provider-models" autocomplete="off" spellcheck="false" />
+        <label for="provider-fallback-model">Fallback text model (optional)</label>
+        <input id="provider-fallback-model" class="wide" type="text" list="provider-models" autocomplete="off" spellcheck="false" />
+        <datalist id="provider-models"></datalist>
+        <div class="row buttons">
+          <button id="test-provider" title="List the models and send a tiny chat request">Test</button>
+          <button id="save-provider">Save</button>
+          <button id="remove-provider" class="danger">Remove</button>
+        </div>
+        <p id="provider-note" class="note"></p>
+        <p class="note">
+          Kept in this browser only. Model calls go from this extension straight to the provider; TabCrew asks
+          for access to the provider's site when you save.
+        </p>
+      </div>
+
+      <div class="group daemon-only">
         <label for="openrouter-key">OpenRouter API key (for browse)</label>
         <p id="openrouter-status" class="note"></p>
         <div class="row">
@@ -70,7 +106,7 @@
         </p>
       </div>
 
-      <div class="group">
+      <div class="group daemon-only">
         <h3>Models</h3>
         <label for="jev-model">Jev model</label>
         <input id="jev-model" class="setting wide" type="text" autocomplete="off" spellcheck="false" />
@@ -85,7 +121,7 @@
         <p id="models-note" class="note"></p>
       </div>
 
-      <div class="group">
+      <div class="group daemon-only">
         <h3>Text model override (optional)</h3>
         <label for="text-key">Override API key</label>
         <p id="text-key-status" class="note"></p>
@@ -105,13 +141,22 @@
 
       <div class="group">
         <h3>Connection</h3>
-        <label for="token">Daemon token (set automatically by pairing)</label>
-        <div class="row">
-          <input id="token" type="password" autocomplete="off" spellcheck="false" placeholder="paste token" />
-          <button id="save-token">Save</button>
+        <label for="mode">Mode</label>
+        <select id="mode" class="wide">
+          <option value="auto">Auto</option>
+          <option value="hub">Hub (OpenCode starts TabCrew)</option>
+          <option value="daemon">Daemon (npx tabcrew setup)</option>
+        </select>
+        <p id="mode-note" class="note"></p>
+        <div class="daemon-only">
+          <label for="token">Daemon token (set automatically by pairing)</label>
+          <div class="row">
+            <input id="token" type="password" autocomplete="off" spellcheck="false" placeholder="paste token" />
+            <button id="save-token">Save</button>
+          </div>
+          <p id="token-note" class="note"></p>
         </div>
-        <p id="token-note" class="note"></p>
-        <label for="port">Daemon port</label>
+        <label for="port" id="port-label">Daemon port</label>
         <div class="row">
           <input id="port" type="number" min="1" max="65535" />
           <button id="save-port">Save</button>

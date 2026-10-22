@@ -1,10 +1,10 @@
-import { V2_EXTENSION_PORT, type V2SettingsPatch, type V2SettingsView } from "@tabcrew/shared/v2";
-import { NOT_PAIRED_TEXT } from "../pairing.js";
+import type { V2SettingsPatch, V2SettingsView } from "@tabcrew/shared/v2";
 import {
   PORT_KEY,
   TOKEN_KEY,
-  parsePort,
-  type PopupStatus,
+  parseModeSetting,
+  saveModeSetting,
+  type ConnectionMode,
   type PopupActionResult,
   type PopupCloseResult,
   type PopupRequest,
@@ -12,27 +12,41 @@ import {
   type PopupState,
   type PopupStopResult,
 } from "../config.js";
+import { probeProvider } from "../model/probe.js";
+import {
+  PROVIDER_PRESETS,
+  clearProviderSettings,
+  loadProviderSettings,
+  originPattern,
+  presetFor,
+  saveProviderSettings,
+  type ProviderSettings,
+} from "../model/settings.js";
 import { bindPlacementRadios } from "./placement.js";
 import {
+  buildProvider,
+  connectionBadge,
+  connectionHint,
   finishedRows,
   keyStatus,
+  modeNote,
   modelField,
+  popupMode,
+  portField,
+  portSetting,
+  probeInput,
+  probeSummary,
+  providerFormFrom,
+  providerKeyStatus,
   removeKeyPrompt,
   sessionRows,
   settingPatch,
   settingsAccess,
-  setupHint,
+  type HeaderRow,
+  type ProviderField,
+  type ProviderForm,
   type SettingsAccess,
 } from "./view.js";
-
-const STATUS_TEXT: Record<PopupStatus, string> = {
-  connected: "connected",
-  connecting: "connecting",
-  needs_token: "pairing…",
-  not_paired: NOT_PAIRED_TEXT,
-  unauthorized: "unauthorized: check token",
-  offline: "offline",
-};
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -56,20 +70,27 @@ function send<T>(msg: PopupRequest): Promise<T> {
 async function refresh(): Promise<void> {
   const state = await send<PopupState>({ type: "v2:get_state" }).catch(() => null);
   if (!state) return;
+  const badge = connectionBadge(state);
   const status = $("status");
-  status.textContent = STATUS_TEXT[state.status];
-  status.className = `status ${state.status}`;
+  status.textContent = badge.text;
+  status.className = badge.className;
   $<HTMLParagraphElement>("token-note").textContent = state.token_set ? "Token saved." : "No token saved.";
-  const hint = setupHint(state);
+  renderMode(state);
+  const hint = connectionHint(state);
   $("setup-hint").hidden = hint === null;
   if (hint) {
     $("setup-text").textContent = hint.text;
-    $("setup-command").textContent = hint.command;
+    $("setup-row").hidden = hint.command === null;
+    $("setup-command").textContent = hint.command ?? "";
     $("setup-detail").textContent = hint.detail ?? "";
+    $("trust-row").hidden = !hint.trust;
   }
   setAccess(settingsAccess(state));
+  const field = portField(state);
+  $("port-label").textContent = field.label;
   const port = $<HTMLInputElement>("port");
-  if (document.activeElement !== port) port.value = String(state.port);
+  port.placeholder = field.placeholder;
+  if (document.activeElement !== port) port.value = field.value;
 
   const list = $<HTMLUListElement>("sessions");
   list.replaceChildren();
@@ -188,15 +209,232 @@ $("save-token").addEventListener("click", async () => {
 });
 
 $("save-port").addEventListener("click", async () => {
-  const raw = $<HTMLInputElement>("port").value;
-  const port = parsePort(raw);
-  if (port === V2_EXTENSION_PORT && String(raw).trim() !== String(V2_EXTENSION_PORT)) {
-    await chrome.storage.local.remove(PORT_KEY);
-  } else {
-    await chrome.storage.local.set({ [PORT_KEY]: port });
-  }
+  const port = portSetting($<HTMLInputElement>("port").value, mode);
+  if (port === null) await chrome.storage.local.remove(PORT_KEY);
+  else await chrome.storage.local.set({ [PORT_KEY]: port });
   setTimeout(() => void refresh(), 300);
 });
+
+// ---------------------------------------------------------------------------
+// Connection mode (Auto | Hub | Daemon). Hub mode hides the daemon-only settings and shows the
+// Model provider; daemon mode keeps the Advanced section exactly as before.
+// ---------------------------------------------------------------------------
+
+/** The effective mode of the last state (daemon until the first state arrives). */
+let mode: ConnectionMode = "daemon";
+let modeKnown = false;
+
+function renderMode(state: PopupState): void {
+  const next = popupMode(state);
+  const select = $<HTMLSelectElement>("mode");
+  if (document.activeElement !== select) select.value = state.mode_setting ?? "auto";
+  $("mode-note").textContent = modeNote(state);
+  if (modeKnown && next === mode) return;
+  const first = !modeKnown;
+  mode = next;
+  modeKnown = true;
+  document.querySelectorAll<HTMLElement>(".daemon-only").forEach((el) => (el.hidden = mode !== "daemon"));
+  document.querySelectorAll<HTMLElement>(".hub-only").forEach((el) => (el.hidden = mode !== "hub"));
+  if (mode === "hub") void loadProvider(first);
+}
+
+$<HTMLSelectElement>("mode").addEventListener("change", async (e) => {
+  await saveModeSetting(parseModeSetting((e.target as HTMLSelectElement).value));
+  setTimeout(() => void refresh(), 300);
+});
+
+$("trust-hub").addEventListener("click", async () => {
+  const trust = $<HTMLButtonElement>("trust-hub");
+  trust.disabled = true;
+  $("trust-note").textContent = "Reconnecting…";
+  const result = await send<PopupActionResult>({ type: "v2:trust_hub" }).catch(
+    (): PopupActionResult => ({ ok: false, error: "extension not responding" }),
+  );
+  $("trust-note").textContent = result.ok ? "" : `Failed: ${result.error}`;
+  trust.disabled = false;
+  setTimeout(() => void refresh(), 500);
+});
+
+// ---------------------------------------------------------------------------
+// Model provider (hub mode): stored in chrome.storage.local (v2:provider) and used by the service
+// worker's model_call proxy. The key input is write-only. Save and Test ask for host access to the
+// provider's origin synchronously in the click (a user gesture), before anything is awaited.
+// ---------------------------------------------------------------------------
+
+let savedProvider: ProviderSettings | null = null;
+let providerLoaded = false;
+
+const PROVIDER_INPUTS: Record<Exclude<ProviderField, "headers">, string> = {
+  base_url: "provider-base-url",
+  api_key: "provider-key",
+  decision_model: "provider-decision-model",
+  text_model: "provider-text-model",
+};
+
+for (const preset of PROVIDER_PRESETS) {
+  const option = document.createElement("option");
+  option.value = preset.id;
+  option.textContent = preset.base_url ? `${preset.label} (${new URL(preset.base_url).host})` : preset.label;
+  $<HTMLSelectElement>("provider-preset").append(option);
+}
+
+async function loadProvider(openIfMissing: boolean): Promise<void> {
+  if (providerLoaded) return;
+  providerLoaded = true;
+  savedProvider = await loadProviderSettings().catch(() => null);
+  fillProviderForm(providerFormFrom(savedProvider));
+  if (openIfMissing && !savedProvider) $<HTMLDetailsElement>("advanced").open = true;
+}
+
+function headerRow(row: HeaderRow): HTMLDivElement {
+  const div = document.createElement("div");
+  div.className = "row header-row";
+  const name = document.createElement("input");
+  name.className = "header-name";
+  name.placeholder = "Name";
+  name.value = row.name;
+  name.spellcheck = false;
+  const value = document.createElement("input");
+  value.className = "header-value";
+  value.placeholder = "Value";
+  value.value = row.value;
+  value.spellcheck = false;
+  value.autocomplete = "off";
+  div.append(name, value, button("×", () => div.remove(), { title: "Remove this header", className: "danger" }));
+  return div;
+}
+
+function fillProviderForm(form: ProviderForm): void {
+  $<HTMLSelectElement>("provider-preset").value = form.preset;
+  $<HTMLInputElement>("provider-base-url").value = form.base_url;
+  $<HTMLInputElement>("provider-key").value = "";
+  $("provider-headers").replaceChildren(...form.headers.map(headerRow));
+  $<HTMLInputElement>("provider-decision-model").value = form.decision_model;
+  $<HTMLInputElement>("provider-text-model").value = form.text_model;
+  $<HTMLInputElement>("provider-fallback-model").value = form.fallback_text_model;
+  renderProviderKey();
+}
+
+function renderProviderKey(): void {
+  const status = providerKeyStatus(savedProvider);
+  note("provider-key-status", status.text, status.warn ? "error" : "");
+  $<HTMLButtonElement>("remove-provider").disabled = savedProvider === null;
+}
+
+function readProviderForm(): ProviderForm {
+  const value = (id: string) => $<HTMLInputElement>(id).value;
+  const headers = Array.from(document.querySelectorAll<HTMLDivElement>("#provider-headers .header-row"), (row) => ({
+    name: row.querySelector<HTMLInputElement>(".header-name")?.value ?? "",
+    value: row.querySelector<HTMLInputElement>(".header-value")?.value ?? "",
+  }));
+  return {
+    preset: presetFor(value("provider-base-url")),
+    base_url: value("provider-base-url"),
+    api_key: value("provider-key"),
+    headers,
+    decision_model: value("provider-decision-model"),
+    text_model: value("provider-text-model"),
+    fallback_text_model: value("provider-fallback-model"),
+  };
+}
+
+function providerProblem(field: ProviderField, error: string): void {
+  note("provider-note", error, "error");
+  if (field !== "headers") $<HTMLInputElement>(PROVIDER_INPUTS[field]).focus();
+}
+
+$<HTMLSelectElement>("provider-preset").addEventListener("change", (e) => {
+  const preset = PROVIDER_PRESETS.find((p) => p.id === (e.target as HTMLSelectElement).value);
+  const url = $<HTMLInputElement>("provider-base-url");
+  if (preset?.base_url) url.value = preset.base_url;
+  else url.focus();
+});
+
+$<HTMLInputElement>("provider-base-url").addEventListener("input", (e) => {
+  $<HTMLSelectElement>("provider-preset").value = presetFor((e.target as HTMLInputElement).value);
+});
+
+$("add-header").addEventListener("click", () => {
+  const row = headerRow({ name: "", value: "" });
+  $("provider-headers").append(row);
+  row.querySelector<HTMLInputElement>(".header-name")?.focus();
+});
+
+$("test-provider").addEventListener("click", async () => {
+  const input = probeInput(readProviderForm(), savedProvider);
+  if (!input.ok) return providerProblem(input.field, input.error);
+  // Synchronously in the click: Chrome only shows the prompt during a user gesture.
+  const granted = chrome.permissions.request({ origins: [originPattern(input.origin)] });
+  const testButton = $<HTMLButtonElement>("test-provider");
+  testButton.disabled = true;
+  note("provider-note", "Testing…");
+  try {
+    if (!(await granted.catch(() => false))) {
+      note("provider-note", `✗ Access to ${input.origin} was not granted.`, "error");
+      return;
+    }
+    const result = await probeProvider(input.input, { fetch: (url, init) => fetch(url, init) });
+    $("provider-models").replaceChildren(
+      ...result.models.map((id) => {
+        const option = document.createElement("option");
+        option.value = id;
+        return option;
+      }),
+    );
+    const summary = probeSummary(result);
+    note("provider-note", summary.text, summary.ok ? "ok" : "error");
+  } finally {
+    testButton.disabled = false;
+  }
+});
+
+$("save-provider").addEventListener("click", async () => {
+  const built = buildProvider(readProviderForm(), savedProvider);
+  if (!built.ok) return providerProblem(built.field, built.error);
+  // Synchronously in the click (user gesture), and the settings are written in the same turn so a
+  // popup closed by the permission prompt still saves them (the proxy re-checks access per call).
+  const granted = chrome.permissions.request({ origins: [originPattern(built.origin)] });
+  const stored = saveProviderSettings(built.settings);
+  try {
+    await stored;
+  } catch (err) {
+    note("provider-note", err instanceof Error ? err.message : String(err), "error");
+    return;
+  }
+  savedProvider = built.settings;
+  fillProviderForm(providerFormFrom(savedProvider));
+  if (await granted.catch(() => false)) {
+    note("provider-note", "Saved. The next browse uses it.");
+  } else {
+    note("provider-note", `Saved, but TabCrew can't call ${built.origin} until you allow access: click Save again and choose Allow.`, "warn");
+  }
+});
+
+{
+  const remove = $<HTMLButtonElement>("remove-provider");
+  let armed: ReturnType<typeof setTimeout> | undefined;
+  const disarm = () => {
+    clearTimeout(armed);
+    armed = undefined;
+    remove.textContent = "Remove";
+  };
+  remove.addEventListener("click", async () => {
+    if (armed === undefined) {
+      remove.textContent = "Confirm remove";
+      note("provider-note", "Remove the model provider and its key? browse will stop working. Click Confirm remove to continue.", "warn");
+      armed = setTimeout(() => {
+        disarm();
+        note("provider-note", "");
+      }, 5000);
+      return;
+    }
+    disarm();
+    await clearProviderSettings();
+    savedProvider = null;
+    fillProviderForm(providerFormFrom(null));
+    note("provider-note", "Removed.");
+  });
+}
 
 void bindPlacementRadios(Array.from(document.querySelectorAll<HTMLInputElement>('input[name="placement"]')));
 
@@ -214,7 +452,7 @@ let access: SettingsAccess = "offline";
 let settings: V2SettingsView | null = null;
 let saving = false;
 
-function note(id: string, text: string, tone: "" | "error" | "warn" = ""): void {
+function note(id: string, text: string, tone: "" | "error" | "warn" | "ok" = ""): void {
   const el = $<HTMLParagraphElement>(id);
   el.textContent = text;
   el.className = tone ? `note ${tone}` : "note";

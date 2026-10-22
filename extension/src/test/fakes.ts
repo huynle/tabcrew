@@ -142,6 +142,8 @@ export function createFakeChrome() {
   const storageChanged = event<[StorageChanges, string]>();
   const onConnect = event<[FakePort]>();
   const ports: FakePort[] = [];
+  const grantedOrigins = new Set<string>();
+  const permissionState = { answer: true };
 
   const chrome = {
     runtime: {
@@ -343,6 +345,20 @@ export function createFakeChrome() {
       onEvent: event<[{ tabId?: number }, string, unknown]>(),
     },
     alarms: { create: vi.fn(async () => undefined), onAlarm: event<[{ name: string }]>() },
+    /** Granted optional host permissions live in `grantedOrigins`; `request` grants unless `permissionAnswer` is false. */
+    permissions: {
+      request: vi.fn(async (p: { origins?: string[] }) => {
+        if (!permissionState.answer) return false;
+        for (const o of p.origins ?? []) grantedOrigins.add(o);
+        return true;
+      }),
+      contains: vi.fn(async (p: { origins?: string[] }) => (p.origins ?? []).every((o) => grantedOrigins.has(o))),
+      remove: vi.fn(async (p: { origins?: string[] }) => {
+        let removed = false;
+        for (const o of p.origins ?? []) removed = grantedOrigins.delete(o) || removed;
+        return removed;
+      }),
+    },
   };
 
   return {
@@ -353,6 +369,11 @@ export function createFakeChrome() {
     attachedDebuggee,
     offscreenDocs,
     ports,
+    grantedOrigins,
+    /** What the user answers to the next `chrome.permissions.request` prompts. */
+    set permissionAnswer(answer: boolean) {
+      permissionState.answer = answer;
+    },
     addWindow,
     addTab,
     focusWindow,
@@ -458,4 +479,47 @@ export function createPortPair(name: string): [FakePort, FakePort] {
 /** Let pending microtasks / promise chains settle. */
 export async function flush(times = 20): Promise<void> {
   for (let i = 0; i < times; i++) await Promise.resolve();
+}
+
+/** One request seen by a `stubFetch` fetch. */
+export interface FetchCall {
+  readonly url: string;
+  readonly method: string;
+  readonly headers: Record<string, string>;
+  /** The request body (text), or null. */
+  readonly body: string | null;
+  readonly init: RequestInit;
+}
+
+/**
+ * A `fetch` stand-in answering through `handler` (a Response, or a value that becomes a JSON 200
+ * Response). Records every call with lower-cased header names. `hang: true` from the handler never
+ * answers until the request's signal aborts (rejecting like fetch does).
+ */
+export function stubFetch(handler: (call: FetchCall) => Response | unknown | Promise<Response | unknown>) {
+  const calls: FetchCall[] = [];
+  const fn = vi.fn(async (input: string | URL | Request, init: RequestInit = {}): Promise<Response> => {
+    const headers: Record<string, string> = {};
+    new Headers(init.headers).forEach((value, name) => (headers[name] = value));
+    const call: FetchCall = {
+      url: String(input),
+      method: (init.method ?? "GET").toUpperCase(),
+      headers,
+      body: typeof init.body === "string" ? init.body : null,
+      init,
+    };
+    calls.push(call);
+    if (init.signal?.aborted) throw init.signal.reason;
+    const answer = await handler(call);
+    if (answer && typeof answer === "object" && (answer as { hang?: unknown }).hang === true) {
+      return new Promise<Response>((_resolve, reject) => {
+        const signal = init.signal;
+        if (!signal) return;
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+      });
+    }
+    if (answer instanceof Response) return answer;
+    return new Response(JSON.stringify(answer), { status: 200, headers: { "content-type": "application/json" } });
+  });
+  return { fetch: fn as unknown as typeof fetch, calls };
 }

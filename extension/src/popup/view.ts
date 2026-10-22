@@ -1,5 +1,8 @@
 import type { V2KeyView, V2ValueView } from "@tabcrew/shared/v2";
-import type { PopupFinishedInfo, PopupSessionInfo, PopupState } from "../config.js";
+import { defaultPort, parsePort, type ConnectionMode, type ConnectionStatus, type PopupFinishedInfo, type PopupSessionInfo, type PopupState } from "../config.js";
+import type { ProbeInput, ProbeResult } from "../model/probe.js";
+import { PROVIDER_PRESETS, keyHint, normalizeBaseUrl, presetFor, validateHeaders, type PresetId, type ProviderSettings } from "../model/settings.js";
+import { NOT_PAIRED_TEXT } from "../pairing.js";
 
 export interface SessionRow {
   readonly short_id: string;
@@ -135,6 +138,8 @@ export function setupHint(state: PopupState): SetupHint | null {
 export type SettingsAccess = "ready" | "outdated" | "waiting" | "offline";
 
 export function settingsAccess(state: PopupState): SettingsAccess {
+  // A hub has no daemon settings (keys live in the popup's Model provider instead): never ask it.
+  if (state.mode === "hub") return "offline";
   if (state.status !== "connected") return "offline";
   if (!state.service) return "waiting";
   return state.service.settings ? "ready" : "outdated";
@@ -152,4 +157,260 @@ export function removeKeyPrompt(field: "openrouter_api_key" | "text_model_api_ke
       ? "Remove your OpenRouter key? browse will stop working."
       : "Remove the override key? The text model will use the OpenRouter key.";
   return { confirmLabel: "Confirm remove", warning: `${what} Click Confirm remove to continue.` };
+}
+
+// ---------------------------------------------------------------------------
+// Connection mode (Auto | Hub | Daemon) and hub mode.
+// ---------------------------------------------------------------------------
+
+/** The effective mode; older service workers do not report one and are daemon-only. */
+export function popupMode(state: PopupState): ConnectionMode {
+  return state.mode ?? "daemon";
+}
+
+const STATUS_TEXT: Record<ConnectionStatus, string> = {
+  connected: "connected",
+  connecting: "connecting",
+  needs_token: "pairing…",
+  not_paired: NOT_PAIRED_TEXT,
+  unauthorized: "unauthorized: check token",
+  offline: "offline",
+  hub_not_running: "hub not running",
+  untrusted_hub: "untrusted hub",
+};
+
+export interface ConnectionBadge {
+  readonly text: string;
+  readonly className: string;
+}
+
+/** The header status pill, from the full connection status (the legacy status for older workers). */
+export function connectionBadge(state: PopupState): ConnectionBadge {
+  const status = state.connection ?? state.status;
+  return { text: STATUS_TEXT[status], className: `status ${status}` };
+}
+
+export const RESET_PIN_COMMAND = "tabcrew mcp reset-pin";
+
+export interface ConnectionHint {
+  readonly text: string;
+  /** A terminal command to show with a Copy button, or null. */
+  readonly command: string | null;
+  readonly detail: string | null;
+  /** Show the "Trust this hub" button. */
+  readonly trust: boolean;
+}
+
+/** The hint box: setup/update in daemon mode, "start OpenCode" / trust in hub mode. */
+export function connectionHint(state: PopupState): ConnectionHint | null {
+  if (popupMode(state) === "daemon") {
+    const hint = setupHint(state);
+    return hint ? { ...hint, trust: false } : null;
+  }
+  switch (state.connection) {
+    case "hub_not_running":
+      return {
+        text: "Start OpenCode — TabCrew starts with it.",
+        command: null,
+        detail: `The TabCrew hub listens on port ${state.port}; this popup connects as soon as it runs.`,
+        trust: false,
+      };
+    case "untrusted_hub":
+      return state.hub_pinned
+        ? {
+            text: "This TabCrew hub failed the trust check (it doesn't know this browser's pin). If you restarted or reset TabCrew yourself, trust it.",
+            command: RESET_PIN_COMMAND,
+            detail: "If trusting fails, the hub trusts another browser profile: run the command above in a terminal, then click Trust this hub again.",
+            trust: true,
+          }
+        : {
+            text: "The TabCrew hub already trusts another browser profile. To use it from this one, run in a terminal:",
+            command: RESET_PIN_COMMAND,
+            detail: "Then click Trust this hub.",
+            trust: true,
+          };
+    default:
+      return null;
+  }
+}
+
+/** Below the Connection selector: what the setting means (and what Auto resolved to). */
+export function modeNote(state: PopupState): string {
+  const mode = popupMode(state);
+  switch (state.mode_setting ?? "auto") {
+    case "hub":
+      return "Hub: OpenCode starts TabCrew; model calls use the provider above.";
+    case "daemon":
+      return "Daemon: the TabCrew service from npx tabcrew setup.";
+    default:
+      return mode === "hub" ? "Auto: hub mode (no daemon token saved)." : "Auto: daemon mode (a daemon token is saved).";
+  }
+}
+
+export interface PortField {
+  readonly label: string;
+  readonly placeholder: string;
+  readonly value: string;
+}
+
+export function portField(state: PopupState): PortField {
+  const mode = popupMode(state);
+  return { label: mode === "hub" ? "Hub port" : "Daemon port", placeholder: String(defaultPort(mode)), value: String(state.port) };
+}
+
+/** The port to store, or null to remove the setting (empty, invalid or the mode's default). */
+export function portSetting(raw: string, mode: ConnectionMode): number | null {
+  const text = raw.trim();
+  if (!/^\d+$/.test(text)) return null;
+  const port = parsePort(text, mode);
+  return port === defaultPort(mode) ? null : port;
+}
+
+// ---------------------------------------------------------------------------
+// Model provider form (hub mode). The key input is write-only: never filled from storage.
+// ---------------------------------------------------------------------------
+
+export interface HeaderRow {
+  readonly name: string;
+  readonly value: string;
+}
+
+export interface ProviderForm {
+  readonly preset: PresetId;
+  readonly base_url: string;
+  /** What the user typed; empty keeps the saved key (same origin only). */
+  readonly api_key: string;
+  readonly headers: readonly HeaderRow[];
+  readonly decision_model: string;
+  readonly text_model: string;
+  readonly fallback_text_model: string;
+}
+
+export function providerFormFrom(settings: ProviderSettings | null): ProviderForm {
+  if (!settings) {
+    const preset = PROVIDER_PRESETS[0];
+    return { preset: preset.id, base_url: preset.base_url ?? "", api_key: "", headers: [], decision_model: "", text_model: "", fallback_text_model: "" };
+  }
+  return {
+    preset: presetFor(settings.base_url),
+    base_url: settings.base_url,
+    api_key: "",
+    headers: Object.entries(settings.headers).map(([name, value]) => ({ name, value })),
+    decision_model: settings.decision_model,
+    text_model: settings.text_model,
+    fallback_text_model: settings.fallback_text_model ?? "",
+  };
+}
+
+export interface ProviderKeyStatus {
+  readonly text: string;
+  readonly warn: boolean;
+}
+
+export function providerKeyStatus(settings: ProviderSettings | null): ProviderKeyStatus {
+  if (!settings) return { text: "Not set — browse disabled", warn: true };
+  const hint = keyHint(settings.api_key);
+  return { text: `Set${hint ? ` …${hint}` : ""} (leave empty to keep it)`, warn: false };
+}
+
+export type ProviderField = "base_url" | "api_key" | "headers" | "decision_model" | "text_model";
+type FormError = { readonly ok: false; readonly field: ProviderField; readonly error: string };
+
+function formError(field: ProviderField, error: string): FormError {
+  return { ok: false, field, error };
+}
+
+/** URL, key and headers shared by Save and Test. The saved key is reused only for its own origin. */
+function connectionPart(
+  form: ProviderForm,
+  saved: ProviderSettings | null,
+): { ok: true; base_url: string; origin: string; api_key: string; headers: Record<string, string> } | FormError {
+  const base = normalizeBaseUrl(form.base_url);
+  if (!base.ok) return formError("base_url", base.error);
+  let apiKey = form.api_key.trim();
+  if (!apiKey) {
+    if (!saved) return formError("api_key", "Paste an API key.");
+    const savedBase = normalizeBaseUrl(saved.base_url);
+    const savedOrigin = savedBase.ok ? savedBase.origin : saved.base_url;
+    if (savedOrigin !== base.origin) {
+      return formError("api_key", `Paste the API key for ${base.origin} (the saved key belongs to ${savedOrigin}).`);
+    }
+    apiKey = saved.api_key;
+  }
+  if (/[\r\n\0]/.test(apiKey)) return formError("api_key", "The API key must be on one line.");
+  const headers: Record<string, string> = {};
+  const seen = new Set<string>();
+  for (const row of form.headers) {
+    const name = row.name.trim();
+    const value = row.value.trim();
+    if (!name && !value) continue;
+    if (!name) return formError("headers", "Give every header a name.");
+    if (seen.has(name.toLowerCase())) return formError("headers", `Header "${name}" is listed twice.`);
+    seen.add(name.toLowerCase());
+    headers[name] = value;
+  }
+  const headersError = validateHeaders(headers);
+  if (headersError) return formError("headers", headersError);
+  return { ok: true, base_url: base.url, origin: base.origin, api_key: apiKey, headers };
+}
+
+export type BuildProviderResult = { readonly ok: true; readonly settings: ProviderSettings; readonly origin: string } | FormError;
+
+/** The settings to store from the form (Save), or the first problem. */
+export function buildProvider(form: ProviderForm, saved: ProviderSettings | null): BuildProviderResult {
+  const conn = connectionPart(form, saved);
+  if (!conn.ok) return conn;
+  const decision = form.decision_model.trim();
+  const text = form.text_model.trim();
+  const fallback = form.fallback_text_model.trim();
+  if (!decision) return formError("decision_model", "Enter a decision model.");
+  if (!text) return formError("text_model", "Enter a text model.");
+  return {
+    ok: true,
+    origin: conn.origin,
+    settings: {
+      kind: "openai-compatible",
+      base_url: conn.base_url,
+      api_key: conn.api_key,
+      headers: conn.headers,
+      decision_model: decision,
+      text_model: text,
+      ...(fallback ? { fallback_text_model: fallback } : {}),
+    },
+  };
+}
+
+export type ProbeInputResult = { readonly ok: true; readonly input: ProbeInput; readonly origin: string } | FormError;
+
+/** What the Test button sends: URL and key required, the decision model optional. */
+export function probeInput(form: ProviderForm, saved: ProviderSettings | null): ProbeInputResult {
+  const conn = connectionPart(form, saved);
+  if (!conn.ok) return conn;
+  return {
+    ok: true,
+    origin: conn.origin,
+    input: { base_url: conn.base_url, api_key: conn.api_key, headers: conn.headers, decision_model: form.decision_model.trim() },
+  };
+}
+
+export interface ProbeSummary {
+  readonly ok: boolean;
+  readonly text: string;
+}
+
+function modelCount(n: number): string {
+  return `${n} model${n === 1 ? "" : "s"}`;
+}
+
+export function probeSummary(result: ProbeResult): ProbeSummary {
+  const { chat, models, models_error } = result;
+  if (chat && !chat.ok) return { ok: false, text: `✗ Chat call failed: ${chat.error}` };
+  if (chat?.ok) {
+    const answered = `${chat.model} answered in ${chat.ms} ms`;
+    return models_error
+      ? { ok: true, text: `✓ ${answered} (model list unavailable: ${models_error})` }
+      : { ok: true, text: `✓ ${modelCount(models.length)} · ${answered}` };
+  }
+  if (models_error) return { ok: false, text: `✗ ${models_error}` };
+  return { ok: true, text: `✓ ${modelCount(models.length)}. Set a decision model to test a chat call.` };
 }
