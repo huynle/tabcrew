@@ -91,3 +91,22 @@ concurrency:
 # Paid live check: Jev browse on real sites (uses OpenRouter credits).
 live:
     node daemon/scripts/live-browse.mjs
+
+# Hub mode (locked-down Chrome): the same live checks through `tabcrew mcp` (starts the hub if needed).
+# Needs `just build` and the extension connected in hub mode; no daemon, token or ~/.tabcrew.
+
+# Hub mode live check: basic tools over the stdio shim.
+hub-smoke:
+    TABCREW_TRANSPORT=shim node daemon/scripts/smoke.mjs
+
+# Hub mode live check: three agents, one shim each, stay isolated.
+hub-isolation:
+    TABCREW_TRANSPORT=shim node daemon/scripts/isolation.mjs
+
+# Hub mode live check: concurrent calls from three shims.
+hub-concurrency:
+    TABCREW_TRANSPORT=shim node daemon/scripts/concurrency.mjs
+
+# Paid (cents) hub mode check: one browse on Wikipedia with the popup's model provider (e.g. Provider).
+live-provider:
+    TABCREW_TRANSPORT=shim node daemon/scripts/live-provider.mjs

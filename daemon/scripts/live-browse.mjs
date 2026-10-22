@@ -1,15 +1,10 @@
 #!/usr/bin/env node
-// PAID live check of the Jev `browse` loop against a running daemon + the TabCrew extension.
-// Each run makes real OpenRouter calls (Jev Decisions + text helper) billed to OPENROUTER_API_KEY.
-// Usage: node daemon/scripts/live-browse.mjs [--only wikipedia|flights] [--parallel] [--keep-open] [--max-steps N]
-import { readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+// PAID live check of the Jev `browse` loop against a running daemon (or hub) + the TabCrew extension.
+// Daemon mode: real OpenRouter calls (Jev Decisions + text helper) billed to OPENROUTER_API_KEY.
+// Hub mode (TABCREW_TRANSPORT=shim): the extension calls the provider set in its popup (Model provider).
+// Usage: [TABCREW_TRANSPORT=shim] node daemon/scripts/live-browse.mjs [--only wikipedia|flights] [--parallel] [--keep-open] [--max-steps N]
+import { connect, describeTransport, transportMode } from "./connect.mjs";
 
-const home = process.env.TABCREW_HOME ?? process.env.CHROMEUSE_HOME ?? join(homedir(), ".tabcrew");
-const port = process.env.TABCREW_MCP_PORT ?? process.env.CHROMEUSE_MCP_PORT ?? "8770";
 const argv = process.argv.slice(2);
 const keepOpen = argv.includes("--keep-open");
 const parallel = argv.includes("--parallel");
@@ -23,13 +18,9 @@ if (only && !["wikipedia", "flights"].includes(only)) {
   process.exit(2);
 }
 const maxStepsArg = flag("--max-steps") ? Number(flag("--max-steps")) : undefined;
-const token = readFileSync(join(home, "token"), "utf8").trim();
 
-const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`), {
-  requestInit: { headers: { Authorization: `Bearer ${token}` } },
-});
-const client = new Client({ name: "tabcrew-live-browse", version: "0.0.0" });
-await client.connect(transport);
+console.log(describeTransport());
+const client = await connect("tabcrew-live-browse");
 
 const BROWSE_TIMEOUT_MS = 10 * 60_000;
 async function call(name, args) {
@@ -167,7 +158,7 @@ const runs = [];
 if (!only || only === "wikipedia") runs.push(wikipedia);
 if (!only || only === "flights") runs.push(flights);
 
-console.log("PAID: this makes real OpenRouter calls.");
+console.log(transportMode() === "shim" ? "PAID: this makes real calls to the model provider set in the TabCrew popup." : "PAID: this makes real OpenRouter calls.");
 const results = [];
 if (parallel) {
   for (const r of await Promise.all(runs.map((run) => run()))) {

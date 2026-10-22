@@ -1,25 +1,19 @@
 #!/usr/bin/env node
-// Live isolation test against a running daemon + the TabCrew extension. No model calls.
-// Three sessions share ONE MCP connection, each drives its own tab concurrently with
-// observe -> act(WAIT) -> observe loops, and every cross-session attempt must fail.
-// Usage: node daemon/scripts/isolation.mjs [--keep-open]
-import { readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+// Live isolation test against a running daemon (or hub) + the TabCrew extension. No model calls.
+// Three sessions each drive their own tab concurrently with observe -> act(WAIT) -> observe loops,
+// and every cross-session attempt must fail. Over HTTP the three share ONE MCP connection; with
+// TABCREW_TRANSPORT=shim every simulated agent gets its own shim process (as separate OpenCode
+// instances would), and closing an agent's connection must end the sessions it opened.
+// Usage: [TABCREW_TRANSPORT=shim] node daemon/scripts/isolation.mjs [--keep-open]
+import { connect, describeTransport, transportMode } from "./connect.mjs";
 
-const home = process.env.TABCREW_HOME ?? process.env.CHROMEUSE_HOME ?? join(homedir(), ".tabcrew");
-const port = process.env.TABCREW_MCP_PORT ?? process.env.CHROMEUSE_MCP_PORT ?? "8770";
 const keepOpen = process.argv.includes("--keep-open");
 const LOOPS = 3;
-const token = readFileSync(join(home, "token"), "utf8").trim();
+const perAgent = transportMode() === "shim";
 
-const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`), {
-  requestInit: { headers: { Authorization: `Bearer ${token}` } },
-});
-const client = new Client({ name: "tabcrew-isolation", version: "0.0.0" });
-await client.connect(transport);
+console.log(describeTransport());
+const shared = perAgent ? null : await connect("tabcrew-isolation");
+const clients = shared ? [shared] : [];
 
 const results = [];
 const check = (name, ok, detail = "") => {
@@ -27,16 +21,23 @@ const check = (name, ok, detail = "") => {
   console.log(`${ok ? "PASS" : "FAIL"}  ${name}${detail ? `  (${detail})` : ""}`);
   return ok;
 };
-async function call(name, args) {
+const caller = (client) => async (name, args) => {
   const r = await client.callTool({ name, arguments: args });
   const text = r.content.find((c) => c.type === "text")?.text ?? "";
   let json = null;
   try { json = JSON.parse(text); } catch {}
   return { error: r.isError ? json ?? { code: "unparsable" } : null, json, raw: r };
+};
+/** A new MCP connection per agent in shim mode, else the shared one. */
+async function agentClient(label) {
+  if (shared) return shared;
+  const client = await connect(`tabcrew-isolation-${label}`);
+  clients.push(client);
+  return client;
 }
 
 // session_close hands remaining tabs to the user; close ours first so nothing is left behind.
-async function finish(session) {
+async function finish(call, session) {
   const tabs = (await call("tab_list", { session })).json?.tabs ?? [];
   let closed = 0;
   for (const t of tabs) if (!(await call("tab_close", { session, tab_id: t.tab_id })).error) closed++;
@@ -45,7 +46,8 @@ async function finish(session) {
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-const tools = (await client.listTools()).tools.map((t) => t.name);
+const firstClient = await agentClient("iso-A");
+const tools = (await firstClient.listTools()).tools.map((t) => t.name);
 check("observe and act are exposed", tools.includes("observe") && tools.includes("act"), tools.sort().join(", "));
 
 const pages = [
@@ -58,14 +60,19 @@ let exitCode = 0;
 
 try {
   for (const p of pages) {
+    const call = caller(p === pages[0] ? firstClient : await agentClient(p.label));
     const s = (await call("session_open", { label: p.label })).json;
     if (!s?.session) throw new Error(`session_open failed for ${p.label}`);
-    sessions.push({ ...p, handle: s.session, short_id: s.short_id });
+    sessions.push({ ...p, call, handle: s.session, short_id: s.short_id });
   }
-  check("three sessions opened on one MCP connection", new Set(sessions.map((s) => s.handle)).size === 3, sessions.map((s) => s.short_id).join(", "));
+  check(
+    `three sessions opened on ${perAgent ? "three MCP connections (one shim each)" : "one MCP connection"}`,
+    new Set(sessions.map((s) => s.handle)).size === 3,
+    sessions.map((s) => s.short_id).join(", "),
+  );
 
   const tc = Date.now();
-  const created = await Promise.all(sessions.map((s) => call("tab_create", { session: s.handle, url: s.url })));
+  const created = await Promise.all(sessions.map((s) => s.call("tab_create", { session: s.handle, url: s.url })));
   const createdOk = created.every((r) => !r.error && Number.isInteger(r.json?.tab_id));
   check("each session created its own tab", createdOk, `${Date.now() - tc} ms; ${created.map((r) => r.json?.tab_id ?? r.error?.code).join(", ")}`);
   if (!createdOk) throw new Error("tab_create failed; is the TabCrew extension connected?");
@@ -74,7 +81,7 @@ try {
   await sleep(2000); // let pages load
 
   for (const s of sessions) {
-    const list = await call("tab_list", { session: s.handle });
+    const list = await s.call("tab_list", { session: s.handle });
     const ids = list.json?.tabs?.map((t) => t.tab_id) ?? [];
     check(`${s.label}: tab_list shows exactly its own tab`, !list.error && ids.length === 1 && ids[0] === s.tab, `sees [${ids}]${list.error ? ` ${list.error.code}` : ""}`);
   }
@@ -83,7 +90,7 @@ try {
     const steps = [];
     const timed = async (name, args) => {
       const t = Date.now();
-      const r = await call(name, args);
+      const r = await s.call(name, args);
       steps.push({ name, ms: Date.now() - t, error: r.error?.code });
       return r;
     };
@@ -97,7 +104,7 @@ try {
       const act = await timed("act", { session: s.handle, tab_id: s.tab, fingerprint: fp, operation: "WAIT" });
       if (act.error || act.json?.executed?.operation !== "WAIT") { ok = false; break; }
       if (i === 0) {
-        const reuse = await call("act", { session: s.handle, tab_id: s.tab, fingerprint: fp, operation: "WAIT" });
+        const reuse = await s.call("act", { session: s.handle, tab_id: s.tab, fingerprint: fp, operation: "WAIT" });
         staleOk = reuse.error?.code === "stale_page";
       }
       const after = await timed("observe", { session: s.handle, tab_id: s.tab });
@@ -109,10 +116,10 @@ try {
   async function crossAttempts(s, victim) {
     const args = { session: s.handle, tab_id: victim.tab };
     const attempts = await Promise.all([
-      call("observe", args),
-      call("act", { ...args, fingerprint: "0".repeat(64), operation: "WAIT" }),
-      call("screenshot", args),
-      call("tab_close", args),
+      s.call("observe", args),
+      s.call("act", { ...args, fingerprint: "0".repeat(64), operation: "WAIT" }),
+      s.call("screenshot", args),
+      s.call("tab_close", args),
     ]);
     return ["observe", "act", "screenshot", "tab_close"].map((name, i) => ({ name, code: attempts[i].error?.code ?? "ok" }));
   }
@@ -153,20 +160,33 @@ try {
   check("sessions progressed concurrently", overlap && wall < sum * 0.75, `wall/sum = ${(wall / sum).toFixed(2)}; overlapping=${overlap}`);
 
   for (const s of sessions) {
-    const list = await call("tab_list", { session: s.handle });
+    const list = await s.call("tab_list", { session: s.handle });
     const ids = list.json?.tabs?.map((t) => t.tab_id) ?? [];
     check(`${s.label}: its tab survived the other sessions' attempts`, ids.length === 1 && ids[0] === s.tab, `sees [${ids}]`);
+  }
+
+  if (perAgent) {
+    // Per-connection ownership: a session ends (handed to the user) when the shim that opened it exits.
+    const extra = await connect("tabcrew-isolation-ephemeral");
+    const opened = (await caller(extra)("session_open", { label: "iso-ephemeral" })).json;
+    await extra.close();
+    let code = "ok";
+    for (let i = 0; i < 20 && code !== "bad_session"; i++) {
+      await sleep(250);
+      code = (await sessions[0].call("tab_list", { session: opened?.session ?? "s_missing" })).error?.code ?? "ok";
+    }
+    check("a session ends when the MCP connection that opened it closes", Boolean(opened?.session) && code === "bad_session", code);
   }
 } catch (err) {
   check("run completed", false, err.message);
 } finally {
   if (!keepOpen) {
     for (const s of sessions) {
-      const c = await finish(s.handle);
+      const c = await finish(s.call, s.handle);
       check(`${s.label}: tab closed and session ended, nothing handed over`, !c.error && c.closed >= (s.tab ? 1 : 0) && c.kept === 0, c.error?.code ?? `closed ${c.closed}, kept ${c.kept}`);
     }
   }
-  await client.close();
+  for (const client of clients) await client.close();
   const failed = results.filter((r) => !r).length;
   console.log(failed ? `\n${failed} of ${results.length} check(s) FAILED` : `\nALL ${results.length} CHECKS PASSED`);
   exitCode = failed ? 1 : 0;
