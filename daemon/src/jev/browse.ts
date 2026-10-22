@@ -6,7 +6,8 @@ import { log } from "../log.js";
 import { actionSpace, checkSnapshot, type ActionSpace, type JevElement, type ObservationCache } from "../observe.js";
 import type { Scheduler } from "../scheduler.js";
 import { sessionRef, type Session, type SessionRegistry } from "../sessions.js";
-import { choose, MISSING_KEY_MESSAGE, type HistoryEntry, type ModelSettings } from "./decisions.js";
+import { decider, missingDecisionKey } from "./chat.js";
+import { MISSING_KEY_MESSAGE, type HistoryEntry, type ModelSettings } from "./decisions.js";
 import { fieldContext, fieldText } from "./text.js";
 
 export const DEFAULT_MAX_STEPS = 25;
@@ -76,6 +77,9 @@ export interface BrowseStep {
   text?: string;
   page_changed: boolean | null;
   decision_ms: number;
+  /** Chat decisions only: the model that chose this step and its one-line reason. */
+  decider?: string;
+  reason?: string;
   text_ms?: number;
   /** Set when the action was not (or not provably) executed: target_covered, target_invalid, outcome_unknown. */
   error?: string;
@@ -174,7 +178,7 @@ export async function runBrowse(
   };
 
   log.info(`browse ${session.short_id} tab ${tabId}: started (max_steps ${maxSteps})`);
-  if (!settings.openrouterApiKey) {
+  if (missingDecisionKey(settings)) {
     status = "model_error";
     message = MISSING_KEY_MESSAGE;
     return finish();
@@ -216,6 +220,7 @@ export async function runBrowse(
   let pendingText = null as PendingText | null;
   let acted = 0;
 
+  const decide = decider(settings);
   const release = await jev.limiter.acquire();
   try {
     page = await observe();
@@ -226,7 +231,7 @@ export async function runBrowse(
         break;
       }
       const current: Page = page;
-      const decision = await choose(current.snapshot, current.space, goal, history, settings);
+      const decision = await decide(current.snapshot, current.space, goal, history);
       usage.decisions++;
       usage.decision_input_tokens += decision.usage.input_tokens;
       usage.decision_cost_usd += decision.usage.cost;
@@ -236,6 +241,7 @@ export async function runBrowse(
         probability: decision.probability,
         confidence: decision.confidence,
         decision_ms: decision.decision_ms,
+        ...(decision.provider === "chat" && { decider: decision.model, ...(decision.reason && { reason: decision.reason }) }),
       };
 
       if (decision.operation === "DONE" || decision.operation === "BLOCKED") {
@@ -251,7 +257,9 @@ export async function runBrowse(
         page = fresh;
         steps.push({ step: steps.length + 1, ...base, label: decision.operation, page_changed: false });
         status = decision.operation === "DONE" ? "done" : "blocked";
-        if (status === "blocked") message = "Jev chose BLOCKED: no supported operation can progress";
+        if (status === "blocked") {
+          message = `${decision.provider === "chat" ? decision.model : "Jev"} chose BLOCKED: no supported operation can progress`;
+        }
         break;
       }
 

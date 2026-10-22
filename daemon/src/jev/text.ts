@@ -47,7 +47,7 @@ export function parseTextReply(content: unknown): string {
   return value;
 }
 
-function reasoningFor(base: string, setting: string): Record<string, unknown> {
+export function reasoningFor(base: string, setting: string): Record<string, unknown> {
   if (setting === "none") return { reasoning: { enabled: false } };
   if (base.includes("api.deepseek.com/")) return { thinking: { type: "disabled" } };
   return { reasoning: { effort: setting } };

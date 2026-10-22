@@ -25,7 +25,18 @@ export interface ModelSettings {
   readonly retryBaseMs?: number;
   /** Per-request timeout (default 25 s). */
   readonly timeoutMs?: number;
+  /** Who picks each step: Jev Decisions API (default), a chat LLM, or Jev with chat fallback when the API is unavailable. */
+  readonly decisionProvider?: DecisionProvider;
+  /** Chat-completion model used by the "chat" and "auto" providers. */
+  readonly decisionModel?: string;
+  /** Chat decision overrides: key (default: the OpenRouter key), OpenAI-compatible base URL (default: OpenRouter), reasoning effort or "none". */
+  readonly decisionModelApiKey?: string;
+  readonly decisionModelBaseUrl?: string;
+  readonly decisionModelReasoning?: string;
 }
+
+export const DECISION_PROVIDERS = ["jev", "chat", "auto"] as const;
+export type DecisionProvider = (typeof DECISION_PROVIDERS)[number];
 
 const RETRY_STATUSES = new Set([429, 503, 529]);
 const MAX_RETRIES = 2;
@@ -37,6 +48,17 @@ function isTimeout(err: unknown): boolean {
 
 function modelError(message: string): DaemonError {
   return new DaemonError("model_error", message);
+}
+
+/** The provider could not be reached or is not serving the endpoint (connection, timeout, 404, 408, 429, 5xx). */
+export class ModelUnavailableError extends DaemonError {
+  constructor(message: string) {
+    super("model_error", message);
+  }
+}
+
+function unavailableStatus(status: number): boolean {
+  return status === 404 || status === 408 || status === 429 || status >= 500;
 }
 
 /** POST JSON with bearer auth. Retries only 429/503/529, at most twice, with exponential backoff. */
@@ -52,7 +74,9 @@ export async function postJson(url: string, key: string, body: unknown, settings
         signal: AbortSignal.timeout(settings.timeoutMs ?? 25_000),
       });
     } catch (err) {
-      throw modelError(isTimeout(err) ? "Model request timed out; no action executed." : "Model connection failed; no action executed.");
+      throw new ModelUnavailableError(
+        isTimeout(err) ? "Model request timed out; no action executed." : "Model connection failed; no action executed.",
+      );
     }
     if (RETRY_STATUSES.has(response.status) && attempt < MAX_RETRIES) {
       await response.body?.cancel().catch(() => {});
@@ -61,7 +85,8 @@ export async function postJson(url: string, key: string, body: unknown, settings
     }
     if (!response.ok) {
       await response.body?.cancel().catch(() => {});
-      throw modelError(`Model provider returned HTTP ${response.status}; no action executed.`);
+      const message = `Model provider returned HTTP ${response.status}; no action executed.`;
+      throw unavailableStatus(response.status) ? new ModelUnavailableError(message) : modelError(message);
     }
     try {
       return await response.json();
@@ -195,6 +220,11 @@ export interface DecisionUsage {
 }
 
 export interface Decision {
+  /** Which provider made this decision, and with which model. */
+  readonly provider: "jev" | "chat";
+  readonly model: string;
+  /** The chat model's one-line rationale (chat provider only). */
+  readonly reason?: string;
   /** An element/control operation, or DONE / BLOCKED. */
   readonly operation: string;
   /** Element target ("3", "3:2") for CLICK/TYPE_TEXT/SELECT, otherwise null. */
@@ -214,7 +244,7 @@ function num(value: unknown): number {
 }
 
 /** One Decisions request; only the chosen operation's target head is consumed and validated. */
-export async function choose(
+export async function chooseJev(
   page: PageState,
   space: ActionSpace,
   goal: string,
@@ -241,6 +271,8 @@ export async function choose(
     const targetAnswer = validateChoice(answerMap[`${operation.toLowerCase()}_target`], [...candidates.keys()]);
     const target = targetAnswer.choice;
     return {
+      provider: "jev",
+      model: settings.jevModel,
       operation,
       target,
       action: candidates.get(target)!,
@@ -252,6 +284,8 @@ export async function choose(
   }
   const control = space.controlActions.get(operation as "SCROLL_UP" | "SCROLL_DOWN" | "WAIT") ?? null;
   return {
+    provider: "jev",
+    model: settings.jevModel,
     operation,
     target: null,
     action: control,

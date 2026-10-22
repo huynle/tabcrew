@@ -187,6 +187,8 @@ The daemon reads `~/.tabcrew/config.toml` (or `$TABCREW_HOME/config.toml`). Envi
 | `browse_concurrency` (1–64) | `TABCREW_BROWSE_CONCURRENCY` | `8` |
 | `jev_model` | `JEV_MODEL` | `typesafe/jev-1.13` |
 | `text_model` | `TEXT_MODEL` | `inception/mercury-2.5` |
+| `decision_provider` | `DECISION_PROVIDER` | `chat` if `decision_model` is set, else `jev` |
+| `decision_model` | `DECISION_MODEL` | none |
 | `allowed_origins` (array) | `TABCREW_ALLOWED_ORIGINS` (comma-separated) | none |
 
 The following settings come from the environment (or `~/.tabcrew/env`) only:
@@ -199,8 +201,26 @@ The following settings come from the environment (or `~/.tabcrew/env`) only:
 | `TEXT_MODEL_REASONING` | Reasoning effort for the text model, or `none` | `none` |
 | `TEXT_MODEL_FALLBACK` | Second text model tried once if the first is slow or fails; `none` disables | `google/gemini-2.5-flash-lite` |
 | `TEXT_MODEL_TIMEOUT_MS` | Per-attempt budget for the text model (500–60000) | `3000` |
+| `DECISION_MODEL_API_KEY` | Separate key for chat decisions | OpenRouter key |
+| `DECISION_MODEL_BASE_URL` | OpenAI-compatible base URL for chat decisions | OpenRouter |
+| `DECISION_MODEL_REASONING` | Reasoning effort for chat decisions, or `none` | `none` |
 | `TABCREW_HOME` | Home directory for token, config, env, logs and runtime | `~/.tabcrew` |
 | `TABCREW_LOG` | `debug` for verbose logs, `silent` for none | info |
+
+### Choosing who decides each `browse` step
+
+By default Jev picks every step through OpenRouter's Decisions API. To try a standard chat model instead, set `decision_model` to any chat-completion model, for example in `~/.tabcrew/config.toml`:
+
+```toml
+decision_model = "anthropic/claude-haiku-5.5"
+# decision_provider = "auto"   # keep Jev, use the chat model only when the Decisions API is unavailable
+```
+
+- `jev`: Jev only (the default when `decision_model` is unset).
+- `chat`: the chat model decides every step. It sees the same page state, operations and targets Jev does, and replies with JSON (`operation`, `target`, `confidence`, `reason`). A reply naming an operation or target that was not offered stops the run with `model_error`; nothing is guessed.
+- `auto`: Jev first. The first time the Decisions API is unreachable, times out or answers 404/408/429/5xx (after retries), the run switches to the chat model for its remaining steps. Other Jev errors, such as a rejected key, still stop the run.
+
+Steps decided by a chat model carry `decider` (the model) and `reason` in the `browse` result; `probability` and `confidence` are then the model's self-reported confidence, not a calibrated distribution. The text helper still fills `TYPE_TEXT` values. Restart the daemon after changing these (`launchctl kickstart -k gui/$(id -u)/com.tabcrew.daemon`); the popup does not edit them yet.
 
 The extension popup (**Advanced**) edits a few of these for you: `OPENROUTER_API_KEY`, `TEXT_MODEL_API_KEY` and `TEXT_MODEL_BASE_URL` in `~/.tabcrew/env`, and `jev_model` / `text_model` in `config.toml` (only those lines change). A value set in the daemon's own environment (for example `JEV_MODEL` in the launchd job or your shell) wins over both files, so the popup shows it as read-only.
 

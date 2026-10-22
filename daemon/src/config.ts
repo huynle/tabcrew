@@ -4,6 +4,7 @@ import { V2_EXTENSION_PORT, V2_MCP_PORT } from "@tabcrew/shared/v2";
 import { parse as parseToml } from "smol-toml";
 import { z } from "zod";
 import { productEnv, resolveHome, type Env } from "./home.js";
+import { DECISION_PROVIDERS, type DecisionProvider } from "./jev/decisions.js";
 import { log } from "./log.js";
 
 export { resolveHome } from "./home.js";
@@ -32,6 +33,14 @@ export interface DaemonConfig {
   readonly textModelFallback: string | null;
   /** Per-attempt budget for the text helper. */
   readonly textModelTimeoutMs: number;
+  /** Who chooses browse steps; defaults to "chat" when decisionModel is set, else "jev". */
+  readonly decisionProvider: DecisionProvider;
+  /** Chat-completion model for chat decisions (e.g. an Anthropic Haiku slug on OpenRouter). */
+  readonly decisionModel: string | undefined;
+  /** Chat decision overrides (environment only): key, OpenAI-compatible base URL, reasoning effort or "none". */
+  readonly decisionModelApiKey: string | undefined;
+  readonly decisionModelBaseUrl: string | undefined;
+  readonly decisionModelReasoning: string;
 }
 
 const port = z.coerce.number().int().min(0).max(65535);
@@ -44,6 +53,8 @@ const fileSchema = z
     browse_concurrency: z.coerce.number().int().min(1).max(64).optional(),
     jev_model: z.string().min(1).optional(),
     text_model: z.string().min(1).optional(),
+    decision_provider: z.enum(DECISION_PROVIDERS).optional(),
+    decision_model: z.string().min(1).optional(),
     allowed_origins: z.array(z.string().min(1)).optional(),
   })
   .passthrough();
@@ -89,6 +100,12 @@ export function loadConfig(env: Env = process.env): DaemonConfig {
   const home = resolveHome(env);
   const file = readConfigFile(home);
   const origins = productValue(env, "ALLOWED_ORIGINS", z.string());
+  const decisionModel = envValue(env, "DECISION_MODEL", z.string().min(1)) ?? file.decision_model;
+  const decisionProvider =
+    envValue(env, "DECISION_PROVIDER", z.enum(DECISION_PROVIDERS)) ?? file.decision_provider ?? (decisionModel ? "chat" : "jev");
+  if (decisionProvider !== "jev" && !decisionModel) {
+    throw new Error(`decision_provider "${decisionProvider}" needs decision_model (DECISION_MODEL) to be set`);
+  }
   return {
     home,
     mcpPort: productValue(env, "MCP_PORT", port) ?? file.mcp_port ?? V2_MCP_PORT,
@@ -116,6 +133,11 @@ export function loadConfig(env: Env = process.env): DaemonConfig {
       envValue(env, "TEXT_MODEL_FALLBACK", z.string().min(1)) ?? "google/gemini-2.5-flash-lite",
     ),
     textModelTimeoutMs: envValue(env, "TEXT_MODEL_TIMEOUT_MS", z.coerce.number().int().min(500).max(60_000)) ?? 3_000,
+    decisionProvider,
+    decisionModel,
+    decisionModelApiKey: env.DECISION_MODEL_API_KEY?.trim() || undefined,
+    decisionModelBaseUrl: envValue(env, "DECISION_MODEL_BASE_URL", z.string().url()),
+    decisionModelReasoning: envValue(env, "DECISION_MODEL_REASONING", z.string().min(1)) ?? "none",
   };
 }
 

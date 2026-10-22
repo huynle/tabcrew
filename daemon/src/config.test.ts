@@ -49,6 +49,24 @@ describe("config", () => {
     expect(c.openrouterApiKey).toBe("k");
   });
 
+  it("configures chat decisions: decision_model implies chat; provider and env overrides", () => {
+    const h = home();
+    expect(loadConfig({ TABCREW_HOME: h })).toMatchObject({ decisionProvider: "jev", decisionModel: undefined, decisionModelReasoning: "none" });
+    writeFileSync(join(h, "config.toml"), 'decision_model = "anthropic/claude-haiku"\n');
+    expect(loadConfig({ TABCREW_HOME: h })).toMatchObject({ decisionProvider: "chat", decisionModel: "anthropic/claude-haiku" });
+    const c = loadConfig({
+      TABCREW_HOME: h,
+      DECISION_PROVIDER: "auto",
+      DECISION_MODEL: "other/model",
+      DECISION_MODEL_API_KEY: " k ",
+      DECISION_MODEL_BASE_URL: "http://localhost:1234/v1",
+    });
+    expect(c).toMatchObject({ decisionProvider: "auto", decisionModel: "other/model", decisionModelApiKey: "k", decisionModelBaseUrl: "http://localhost:1234/v1" });
+    expect(() => loadConfig({ TABCREW_HOME: h, DECISION_PROVIDER: "gpt" })).toThrow(/DECISION_PROVIDER/);
+    writeFileSync(join(h, "config.toml"), 'decision_provider = "chat"\n');
+    expect(() => loadConfig({ TABCREW_HOME: h })).toThrow(/needs decision_model/);
+  });
+
   it("rejects invalid values", () => {
     const h = home();
     expect(() => loadConfig({ TABCREW_HOME: h, TABCREW_MCP_PORT: "70000" })).toThrow(/TABCREW_MCP_PORT/);

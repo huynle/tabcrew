@@ -5,6 +5,7 @@ import type { RunningDaemon } from "../daemon.js";
 import { setLogSink } from "../log.js";
 import { flightsSnapshot } from "../testing/fixtures.js";
 import { call, FakeExtension, mcpClient, simpleSnapshot, startTestDaemon, tempHome, until, WireError } from "../testing/helpers.js";
+import { CHAT_DECISION } from "./chat.js";
 import { NEXT_ACTION, TEXT_VALUE } from "./questions.js";
 
 // ---------------------------------------------------------------------------
@@ -22,9 +23,19 @@ const realFetch = globalThis.fetch;
 let modelCalls: ModelCall[];
 let onDecision: (body: any, n: number) => Reply;
 let onText: (body: any, n: number) => Reply;
+let onChat: (body: any, n: number) => Reply;
 
 const decisionCalls = () => modelCalls.filter((c) => c.url.endsWith("/api/alpha/decisions"));
-const textCalls = () => modelCalls.filter((c) => c.url.endsWith("/chat/completions"));
+const isChatDecision = (body: any) => body?.messages?.[0]?.content === CHAT_DECISION;
+const textCalls = () => modelCalls.filter((c) => c.url.endsWith("/chat/completions") && !isChatDecision(c.body));
+const chatCalls = () => modelCalls.filter((c) => c.url.endsWith("/chat/completions") && isChatDecision(c.body));
+
+function chatReply(content: unknown) {
+  return Response.json({
+    choices: [{ message: { content: typeof content === "string" ? content : JSON.stringify(content) } }],
+    usage: { prompt_tokens: 1500, completion_tokens: 30, cost: 0.0005 },
+  });
+}
 
 function pick(criteria: Record<string, unknown>, choice: string, p = 0.9) {
   const ids = Object.keys(criteria);
@@ -76,14 +87,14 @@ beforeEach(() => {
   modelCalls = [];
   onDecision = (body) => jev(body, "DONE");
   onText = () => textReply('{"text": "Zurich"}');
+  onChat = () => chatReply({ operation: "DONE", target: null, confidence: 0.9, reason: "done" });
   vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = input instanceof Request ? input.url : String(input);
-    if (!url.startsWith("https://openrouter.ai/")) return realFetch(input, init);
+    if (!url.startsWith("https://openrouter.ai/") && !url.startsWith("https://llm.example/")) return realFetch(input, init);
     const body = JSON.parse(String(init?.body));
     modelCalls.push({ url, body, auth: new Headers(init?.headers).get("authorization") });
-    return url.endsWith("/api/alpha/decisions")
-      ? onDecision(body, decisionCalls().length - 1)
-      : onText(body, textCalls().length - 1);
+    if (url.endsWith("/api/alpha/decisions")) return onDecision(body, decisionCalls().length - 1);
+    return isChatDecision(body) ? onChat(body, chatCalls().length - 1) : onText(body, textCalls().length - 1);
   });
 });
 
@@ -558,5 +569,86 @@ describe("loop control", () => {
     expect(browseLines[1]).toMatch(new RegExp(`^browse ${a.short_id} tab ${a.tab}: done after 2 step\\(s\\) in \\d+ ms$`));
     const all = lines.join("\n");
     for (const secret of ["GoalWords", "SecretCity", "Search flights", "Zürich"]) expect(all).not.toContain(secret);
+  });
+});
+
+describe("chat decisions (decision_model)", () => {
+  const CHAT_ENV = { OPENROUTER_API_KEY: "test-key", DECISION_MODEL: "anthropic/claude-haiku" };
+
+  it("asks the chat model instead of Jev, with the same state and offered options", async () => {
+    const { client, ext } = await setup(CHAT_ENV);
+    const a = await openWithTab(client, ext, () => flightsSnapshot());
+    progressing(ext, a.tab);
+    const moves = [
+      { operation: "click", target: 1, confidence: 0.7, reason: "open the origin picker" },
+      { operation: "DONE", target: null, confidence: 0.95, reason: "picker open" },
+    ];
+    onChat = (_b, n) => chatReply("```json\n" + JSON.stringify(moves[n]) + "\n```");
+    const r = await browse(client, { session: a.S, tab_id: a.tab, goal: "Open the origin picker" });
+
+    expect(decisionCalls()).toHaveLength(0);
+    expect(chatCalls()).toHaveLength(2);
+    const first = chatCalls()[0];
+    expect(first.url).toBe("https://openrouter.ai/api/v1/chat/completions");
+    expect(first.auth).toBe("Bearer test-key");
+    expect(first.body).toMatchObject({ model: "anthropic/claude-haiku", reasoning: { enabled: false } });
+    const user = JSON.parse(first.body.messages[1].content);
+    expect(user.goal).toBe("Open the origin picker");
+    expect(Object.keys(user.operations)).toEqual(["TYPE_TEXT", "CLICK", "SELECT", "SCROLL_DOWN", "WAIT", "DONE", "BLOCKED"]);
+    expect(Object.keys(user.targets.CLICK)).toEqual(["1", "2", "4", "5", "6"]);
+    expect(user.page.url).toBe("https://flights.example/search");
+    expect(user.elements[0]).toMatchObject({ index: "1", label: "Where from?" });
+
+    expect(acts(ext).map((q) => q.args)).toEqual([{ tab_id: a.tab, fingerprint: "fp-flights-1", action_id: "e2" }]);
+    expect(r.status).toBe("done");
+    expect(r.steps).toEqual([
+      { step: 1, operation: "CLICK", target: "1", label: "Open Where from?", probability: 0.7, confidence: 0.7, page_changed: true, decision_ms: expect.any(Number), decider: "anthropic/claude-haiku", reason: "open the origin picker" },
+      { step: 2, operation: "DONE", target: null, label: "DONE", probability: 0.95, confidence: 0.95, page_changed: false, decision_ms: expect.any(Number), decider: "anthropic/claude-haiku", reason: "picker open" },
+    ]);
+    expect(r.usage).toEqual({ decisions: 2, decision_input_tokens: 3000, decision_cost_usd: 0.001, text_calls: 0, text_cost_usd: 0 });
+  });
+
+  it("uses DECISION_MODEL_BASE_URL and DECISION_MODEL_API_KEY without an OpenRouter key", async () => {
+    const { client, ext } = await setup({ DECISION_MODEL: "claude-haiku", DECISION_MODEL_BASE_URL: "https://llm.example/v1/", DECISION_MODEL_API_KEY: "local-key" });
+    const a = await openWithTab(client, ext);
+    const r = await browse(client, { session: a.S, tab_id: a.tab, goal: "g" });
+    expect(r.status).toBe("done");
+    expect(chatCalls().map((c) => [c.url, c.auth])).toEqual([["https://llm.example/v1/chat/completions", "Bearer local-key"]]);
+  });
+
+  it("stops with model_error and acts on nothing when the reply targets an element it was not offered", async () => {
+    const { client, ext } = await setup(CHAT_ENV);
+    const a = await openWithTab(client, ext, () => flightsSnapshot());
+    onChat = () => chatReply({ operation: "CLICK", target: "3", confidence: 0.9 });
+    const r = await browse(client, { session: a.S, tab_id: a.tab, goal: "g" });
+    expect(r.status).toBe("model_error");
+    expect(r.message).toMatch(/target not offered for CLICK/);
+    expect(acts(ext)).toHaveLength(0);
+  });
+
+  it("auto: falls back to the chat model for the rest of the run when Decisions is unavailable", async () => {
+    const { client, ext } = await setup({ ...CHAT_ENV, DECISION_PROVIDER: "auto" });
+    const a = await openWithTab(client, ext);
+    progressing(ext, a.tab);
+    onDecision = () => new Response("gone", { status: 404 });
+    onChat = (_b, n) => chatReply(n === 0 ? { operation: "CLICK", target: "1", confidence: 0.6 } : { operation: "DONE", confidence: 0.9 });
+    const r = await browse(client, { session: a.S, tab_id: a.tab, goal: "g" });
+    expect(r.status).toBe("done");
+    expect(decisionCalls()).toHaveLength(1);
+    expect(chatCalls()).toHaveLength(2);
+    expect(r.steps.map((s: { decider?: string }) => s.decider)).toEqual(["anthropic/claude-haiku", "anthropic/claude-haiku"]);
+  });
+
+  it("auto: uses Jev while it answers, and does not fall back on a rejected key", async () => {
+    const { client, ext } = await setup({ ...CHAT_ENV, DECISION_PROVIDER: "auto" });
+    const a = await openWithTab(client, ext);
+    const ok = await browse(client, { session: a.S, tab_id: a.tab, goal: "g" });
+    expect(ok.status).toBe("done");
+    expect(ok.steps[0].decider).toBeUndefined();
+    onDecision = () => new Response("no", { status: 401 });
+    const bad = await browse(client, { session: a.S, tab_id: a.tab, goal: "g" });
+    expect(bad.status).toBe("model_error");
+    expect(bad.message).toMatch(/HTTP 401/);
+    expect(chatCalls()).toHaveLength(0);
   });
 });
