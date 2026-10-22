@@ -1,11 +1,14 @@
 import { createHmac, randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { request as httpRequest } from "node:http";
+import { connect as netConnect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import { ReadBuffer, serializeMessage } from "@modelcontextprotocol/sdk/shared/stdio.js";
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
+import type { CallToolResult, JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 import {
   V2_EXT_FEATURE_MODEL_CALL,
   V2_PIN_NONCE_BYTES,
@@ -76,6 +79,41 @@ export async function mcpClient(port: number, token: string): Promise<Client> {
   });
   await client.connect(transport);
   return client;
+}
+
+/** MCP client transport over a connected Unix socket (newline-delimited JSON, like stdio). */
+export class SocketClientTransport implements Transport {
+  onclose?: () => void;
+  onerror?: (error: Error) => void;
+  onmessage?: (message: JSONRPCMessage) => void;
+  private readonly buffer = new ReadBuffer();
+  constructor(readonly socket: Socket) {}
+  async start(): Promise<void> {
+    this.socket.on("data", (chunk: Buffer) => {
+      this.buffer.append(chunk);
+      for (let m = this.buffer.readMessage(); m; m = this.buffer.readMessage()) this.onmessage?.(m);
+    });
+    this.socket.on("close", () => this.onclose?.());
+    this.socket.on("error", (err) => this.onerror?.(err));
+  }
+  async send(message: JSONRPCMessage): Promise<void> {
+    this.socket.write(serializeMessage(message));
+  }
+  async close(): Promise<void> {
+    this.socket.destroy();
+  }
+}
+
+/** Connect an MCP client to a Unix socket MCP server (hub mode). */
+export async function mcpSocketClient(path: string): Promise<{ client: Client; socket: Socket }> {
+  const socket = netConnect(path);
+  await new Promise<void>((resolve, reject) => {
+    socket.once("connect", () => resolve());
+    socket.once("error", reject);
+  });
+  const client = new Client({ name: "test", version: "0" });
+  await client.connect(new SocketClientTransport(socket));
+  return { client, socket };
 }
 
 export type ToolOutcome = { ok: true; value: any } | { ok: false; error: V2Error };
