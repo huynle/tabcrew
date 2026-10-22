@@ -41,8 +41,11 @@ This extension does nothing on its own. It connects only to the TabCrew daemon r
 
 Setup installs the background service, pairs the extension automatically (no token to copy) and can add TabCrew to OpenCode and Claude Code for you. "browse" needs your own OpenRouter API key, which you can add during setup or later in the popup's Advanced section (it is stored by the local service, not in Chrome); everything else works without one.
 
+LOCKED-DOWN OR CORPORATE CHROME? HUB MODE
+If your browser policy blocks native messaging, or you don't want a background service, your agent tool can start TabCrew itself ("tabcrew mcp"; see the README). All settings then live in this extension's popup. That includes the AI model provider for "browse": any OpenAI-compatible endpoint, such as OpenRouter or your company's gateway, with your own key and optional headers. The key is stored only in this browser. The extension calls that provider directly, and Chrome asks you to allow access to the provider's site when you save.
+
 PRIVACY
-No accounts, no analytics, no tracking, no TabCrew servers. Page content goes only to the daemon on your own computer, and, if you use "browse", from there to the AI model provider you configured with your own key. Privacy policy: https://github.com/huynle/tabcrew/blob/main/docs/privacy.md
+No accounts, no analytics, no tracking, no TabCrew servers. Page content goes only to the TabCrew service on your own computer and, if you use "browse", to the AI model provider you configured with your own key. In hub mode the extension sends it to that provider directly. Privacy policy: https://github.com/huynle/tabcrew/blob/main/docs/privacy.md
 
 OPEN SOURCE
 MIT licensed. Source code, documentation and issue tracker: https://github.com/huynle/tabcrew
