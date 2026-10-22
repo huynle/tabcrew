@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CLI_USAGE, cliMain } from "./cli/main.js";
 import { realSystem } from "./cli/system.js";
+import { runHub } from "./hub/main.js";
 import { log } from "./log.js";
 import { runDaemon } from "./serve.js";
 
@@ -12,6 +13,7 @@ import { runDaemon } from "./serve.js";
 const USAGE = `usage: tabcrew-daemon [run | <tabcrew command>]
 
   (none), run   run the TabCrew daemon in the foreground
+  hub           run a hub for \`tabcrew mcp\` in the foreground (see: hub --help)
 
 ${CLI_USAGE}`;
 
@@ -19,6 +21,13 @@ async function main(argv: string[]): Promise<void> {
   const command = argv[0];
   if (command === undefined || command === "run") {
     await runDaemon();
+    return;
+  }
+  if (command === "hub") {
+    const code = await runHub(argv.slice(1));
+    process.exitCode = code;
+    // Never linger after the hub stopped (a stray handle must not keep it alive).
+    setTimeout(() => process.exit(code), 2_000).unref();
     return;
   }
   if (command === "help" || command === "--help" || command === "-h") {
