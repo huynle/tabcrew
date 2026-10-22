@@ -7,7 +7,7 @@ import { actionSpace, checkSnapshot, type ActionSpace, type JevElement, type Obs
 import type { Scheduler } from "../scheduler.js";
 import { sessionRef, type Session, type SessionRegistry } from "../sessions.js";
 import { decider, missingDecisionKey } from "./chat.js";
-import { MISSING_KEY_MESSAGE, type HistoryEntry, type ModelSettings } from "./decisions.js";
+import { MISSING_KEY_MESSAGE, type HistoryEntry, type ModelSettings, type ModelTransport } from "./decisions.js";
 import { fieldContext, fieldText } from "./text.js";
 
 export const DEFAULT_MAX_STEPS = 25;
@@ -55,6 +55,11 @@ export interface JevRuntime {
   /** Replaced when the popup changes settings; each browse reads it once when it starts. */
   settings: ModelSettings;
   readonly limiter: Limiter;
+  /**
+   * Hub mode: the model_call transport (bound to the extension bridge). Every browse uses it in
+   * place of `settings.transport`, so a settings replacement never drops it.
+   */
+  transport?: ModelTransport;
 }
 
 export interface BrowseContext {
@@ -144,7 +149,7 @@ export async function runBrowse(
   maxSteps: number,
 ): Promise<BrowseResult> {
   const { registry, bridge, observations, jev } = ctx;
-  const settings = jev.settings;
+  const settings: ModelSettings = jev.transport ? { ...jev.settings, transport: jev.transport } : jev.settings;
   const started = performance.now();
   const steps: BrowseStep[] = [];
   const history: HistoryEntry[] = [];
@@ -340,7 +345,7 @@ export async function runBrowse(
     if (isCode(err, "stopped_by_user")) {
       status = "stopped_by_user";
       message = "the user pressed Stop for this session; ask the user before continuing";
-    } else if (isCode(err, "model_error")) {
+    } else if (isCode(err, "model_error", "model_not_configured")) {
       status = "model_error";
       message = (err as DaemonError).message;
     } else {

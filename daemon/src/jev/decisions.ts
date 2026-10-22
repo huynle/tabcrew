@@ -1,4 +1,5 @@
-import type { V2Action } from "@tabcrew/shared/v2";
+import type { V2Action, V2ModelCallBody, V2ModelPurpose } from "@tabcrew/shared/v2";
+import type { ExtensionBridge } from "../bridge.js";
 import { DaemonError } from "../errors.js";
 import type { ActionSpace, ElementOperation } from "../observe.js";
 import { NEXT_ACTION, TARGET } from "./questions.js";
@@ -33,6 +34,16 @@ export interface ModelSettings {
   readonly decisionModelApiKey?: string;
   readonly decisionModelBaseUrl?: string;
   readonly decisionModelReasoning?: string;
+  /**
+   * How model requests are sent. Unset/HTTP: daemon mode (keys, URLs, OpenRouter fields from these
+   * settings). model_call: hub mode — the extension owns provider, model and key; decisions are chat-only.
+   */
+  readonly transport?: ModelTransport;
+}
+
+/** Hub mode: model calls go through the extension (`model_call`). */
+export function viaExtension(settings: Pick<ModelSettings, "transport">): boolean {
+  return settings.transport?.kind === "model_call";
 }
 
 export const DECISION_PROVIDERS = ["jev", "chat", "auto"] as const;
@@ -61,41 +72,168 @@ function unavailableStatus(status: number): boolean {
   return status === 404 || status === 408 || status === 429 || status >= 500;
 }
 
-/** POST JSON with bearer auth. Retries only 429/503/529, at most twice, with exponential backoff. */
-export async function postJson(url: string, key: string, body: unknown, settings: Pick<ModelSettings, "retryBaseMs" | "timeoutMs">): Promise<unknown> {
-  const base = settings.retryBaseMs ?? 500;
-  for (let attempt = 0; ; attempt++) {
+/**
+ * One model request. HTTP (daemon mode) needs `url`, `key` and sends `body` as is; model_call (hub
+ * mode) needs `purpose` and forwards only `messages`, `max_tokens` and `response_format` (the
+ * extension injects model, URL and credentials).
+ */
+export interface ModelRequest {
+  readonly purpose?: V2ModelPurpose;
+  readonly url?: string;
+  readonly key?: string;
+  readonly body: Readonly<Record<string, unknown>>;
+}
+
+/** A provider reply, whatever its HTTP status. */
+export interface TransportReply {
+  readonly status: number;
+  /** The model that answered, when the transport knows it (model_call). */
+  readonly model?: string;
+  /** The reply body (called for 2xx only); throws `model_error` when it is not JSON. */
+  json(): Promise<unknown>;
+  /** Drop an unread body. */
+  discard(): Promise<void>;
+}
+
+/** How model requests reach the provider. Retries and status classification live in `sendModel`. */
+export interface ModelTransport {
+  readonly kind: "http" | "model_call";
+  /** One attempt. Throws `ModelUnavailableError` when no reply exists; other DaemonErrors pass through. */
+  exchange(request: ModelRequest, timeoutMs: number): Promise<TransportReply>;
+  /** Extra guidance appended to a non-2xx status message. */
+  statusHint?(status: number, json: unknown): string;
+}
+
+/** Daemon mode: POST JSON with bearer auth straight to the provider. */
+export const httpTransport: ModelTransport = {
+  kind: "http",
+  async exchange(request, timeoutMs) {
+    if (!request.url || request.key === undefined) throw new DaemonError("internal", "HTTP model request without url or key");
     let response: Response;
     try {
-      response = await globalThis.fetch(url, {
+      response = await globalThis.fetch(request.url, {
         method: "POST",
-        headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-        signal: AbortSignal.timeout(settings.timeoutMs ?? 25_000),
+        headers: { Authorization: `Bearer ${request.key}`, "Content-Type": "application/json" },
+        body: JSON.stringify(request.body),
+        signal: AbortSignal.timeout(timeoutMs),
       });
     } catch (err) {
       throw new ModelUnavailableError(
         isTimeout(err) ? "Model request timed out; no action executed." : "Model connection failed; no action executed.",
       );
     }
-    if (RETRY_STATUSES.has(response.status) && attempt < MAX_RETRIES) {
-      await response.body?.cancel().catch(() => {});
+    return {
+      status: response.status,
+      async json() {
+        try {
+          return await response.json();
+        } catch (err) {
+          throw modelError(
+            isTimeout(err) ? "Model response timed out; no action executed." : "Model provider returned invalid JSON; no action executed.",
+          );
+        }
+      },
+      async discard() {
+        await response.body?.cancel().catch(() => {});
+      },
+    };
+  },
+};
+
+/** Where hub-mode users fix provider settings. */
+export const HUB_PROVIDER_SETTINGS = "the TabCrew popup (Model provider)";
+
+/** Hub mode: `model_not_configured` from the extension becomes a `model_error` the agent can relay; other errors pass through. */
+export function notConfiguredError(err: unknown): unknown {
+  if (!(err instanceof DaemonError) || err.code !== "model_not_configured") return err;
+  const detail = err.message.replace(/[\s.;]+$/, "");
+  return modelError(`No model provider available (${detail}): set the provider, key and models in ${HUB_PROVIDER_SETTINGS}; no action executed.`);
+}
+
+function providerMessage(json: unknown): string {
+  const error = (json as { error?: unknown } | null)?.error;
+  const message = typeof error === "string" ? error : (error as { message?: unknown } | null)?.message;
+  return typeof message === "string" ? message.replace(/\s+/g, " ").trim().slice(0, 200) : "";
+}
+
+/**
+ * Hub mode: the extension calls its configured provider (`ExtensionBridge.modelCall`). The hub
+ * chooses only the purpose and the chat body; it never sends a model, URL, key or extra fields.
+ */
+export function modelCallTransport(bridge: Pick<ExtensionBridge, "modelCall">): ModelTransport {
+  return {
+    kind: "model_call",
+    async exchange(request, timeoutMs) {
+      if (!request.purpose) throw new DaemonError("internal", "model_call request without a purpose");
+      const b = request.body as Partial<V2ModelCallBody>;
+      const body = {
+        messages: b.messages ?? [],
+        max_tokens: b.max_tokens ?? 0,
+        ...(b.response_format && { response_format: b.response_format }),
+      } as V2ModelCallBody;
+      const result = await bridge.modelCall(request.purpose, body, timeoutMs);
+      return {
+        status: result.status,
+        model: result.model,
+        async json() {
+          if (result.json === null || result.json === undefined) throw modelError("Model provider returned invalid JSON; no action executed.");
+          return result.json;
+        },
+        async discard() {},
+      };
+    },
+    statusHint(status, json) {
+      const detail = providerMessage(json);
+      const fix =
+        status === 401 || status === 403
+          ? `; check the API key and headers in ${HUB_PROVIDER_SETTINGS}`
+          : status === 404
+            ? `; check the base URL and model in ${HUB_PROVIDER_SETTINGS}`
+            : "";
+      return `${detail ? ` (${detail})` : ""}${fix}`;
+    },
+  };
+}
+
+/**
+ * Send one model request over `transport`. Retries only 429/503/529, at most twice, with
+ * exponential backoff; 404/408/429/5xx and no reply are `ModelUnavailableError`, other non-2xx
+ * statuses and invalid JSON plain `model_error`.
+ */
+export async function sendModel(
+  transport: ModelTransport,
+  request: ModelRequest,
+  settings: Pick<ModelSettings, "retryBaseMs" | "timeoutMs">,
+): Promise<{ json: unknown; model: string | undefined }> {
+  const base = settings.retryBaseMs ?? 500;
+  for (let attempt = 0; ; attempt++) {
+    const reply = await transport.exchange(request, settings.timeoutMs ?? 25_000);
+    if (RETRY_STATUSES.has(reply.status) && attempt < MAX_RETRIES) {
+      await reply.discard();
       await new Promise((r) => setTimeout(r, base * 2 ** attempt));
       continue;
     }
-    if (!response.ok) {
-      await response.body?.cancel().catch(() => {});
-      const message = `Model provider returned HTTP ${response.status}; no action executed.`;
-      throw unavailableStatus(response.status) ? new ModelUnavailableError(message) : modelError(message);
+    if (reply.status < 200 || reply.status > 299) {
+      let hint = "";
+      if (transport.statusHint) hint = transport.statusHint(reply.status, await reply.json().catch(() => null));
+      else await reply.discard();
+      const message = `Model provider returned HTTP ${reply.status}${hint}; no action executed.`;
+      throw unavailableStatus(reply.status) ? new ModelUnavailableError(message) : modelError(message);
     }
-    try {
-      return await response.json();
-    } catch (err) {
-      throw modelError(
-        isTimeout(err) ? "Model response timed out; no action executed." : "Model provider returned invalid JSON; no action executed.",
-      );
-    }
+    return { json: await reply.json(), model: reply.model };
   }
+}
+
+/** POST JSON with bearer auth (HTTP transport). Retries only 429/503/529, at most twice, with exponential backoff. */
+export async function postJson(url: string, key: string, body: unknown, settings: Pick<ModelSettings, "retryBaseMs" | "timeoutMs">): Promise<unknown> {
+  return (await sendModel(httpTransport, { url, key, body: body as Record<string, unknown> }, settings)).json;
+}
+
+/** `usage.cost` as a number: OpenRouter sends a number, Provider `{input_cost, output_cost, total_cost}`. */
+export function parseCost(usage: unknown): number {
+  const cost = (usage as { cost?: unknown } | null | undefined)?.cost;
+  const value = cost && typeof cost === "object" ? (cost as { total_cost?: unknown }).total_cost : cost;
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
 export interface ChoiceAnswer {
@@ -260,7 +398,7 @@ export async function chooseJev(
   const answers = result && typeof result === "object" ? result.answers : undefined;
   if (!answers || typeof answers !== "object") throw modelError("Invalid Jev response; no action executed.");
   const rawUsage = result?.usage ?? {};
-  const usage: DecisionUsage = { input_tokens: num(rawUsage.input_tokens), output_tokens: num(rawUsage.output_tokens), cost: num(rawUsage.cost) };
+  const usage: DecisionUsage = { input_tokens: num(rawUsage.input_tokens), output_tokens: num(rawUsage.output_tokens), cost: parseCost(rawUsage) };
   const answerMap = answers as Record<string, unknown>;
 
   const opAnswer = validateChoice(answerMap.operation, request.operations);
