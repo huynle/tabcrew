@@ -73,7 +73,9 @@ describe("ExtensionBridge.modelCall", () => {
   it("clamps timeout_ms to 1..120000", async () => {
     const { bridge, ext } = await hubWith();
     await bridge.modelCall("text", BODY, 500_000);
-    await bridge.modelCall("text", BODY, 0);
+    // 1 ms (with no grace in these tests) may time out on the hub side before the reply: only the frame matters here.
+    await bridge.modelCall("text", BODY, 0).catch(() => {});
+    await until(() => ext.modelCalls.length === 2);
     expect(ext.modelCalls.map((c) => c.timeout_ms)).toEqual([120_000, 1]);
   });
 

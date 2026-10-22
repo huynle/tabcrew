@@ -30,7 +30,8 @@ import {
 } from "@tabcrew/shared/v2";
 import { WebSocket } from "ws";
 import { loadConfig, type DaemonConfig } from "../config.js";
-import { startDaemon, type DaemonOverrides, type RunningDaemon } from "../daemon.js";
+import { startDaemon, type DaemonOverrides, type HubModeOptions, type RunningDaemon, type RunningHub } from "../daemon.js";
+import { MemoryPinStore } from "../pin.js";
 import { setLogSink } from "../log.js";
 
 setLogSink(() => {});
@@ -51,6 +52,27 @@ export async function startTestDaemon(
 ): Promise<RunningDaemon> {
   // The settings service reads this env, never the real process environment.
   return startDaemon(testConfig(home, env), { offlineWaitMs: 300, env: { TABCREW_HOME: home, ...env }, ...overrides });
+}
+
+/**
+ * Start a hub for tests: runtime dir `<dir>/rt`, socket `<dir>/rt/hub.sock`, a free extension port,
+ * an in-memory pin store (unless given) and a 500 ms offline wait. The daemon home is `<dir>/home`
+ * and is never created by hub mode.
+ */
+export async function startTestHub(
+  dir: string,
+  hub: Partial<Omit<HubModeOptions, "mode">> = {},
+  overrides: DaemonOverrides = {},
+): Promise<RunningHub> {
+  const runtimeDir = hub.runtimeDir ?? join(dir, "rt");
+  return startDaemon(testConfig(join(dir, "home")), { offlineWaitMs: 500, ...overrides }, {
+    ...hub,
+    mode: "hub",
+    runtimeDir,
+    socketPath: hub.socketPath ?? join(runtimeDir, "hub.sock"),
+    pinStore: hub.pinStore ?? new MemoryPinStore(),
+    extensionPort: hub.extensionPort ?? 0,
+  });
 }
 
 export function rawHttp(
