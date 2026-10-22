@@ -30,3 +30,32 @@ describe("TabCrew extension IDs", () => {
     expect(tabcrewExtensionIds({ dev: TABCREW_EXTENSION_IDS.dev, store: "<pending>" })).toEqual([TABCREW_EXTENSION_IDS.dev]);
   });
 });
+
+describe("extension origin checks (hub WebSocket Origin)", () => {
+  const dev = `chrome-extension://${TABCREW_EXTENSION_IDS.dev}`;
+
+  it("normalizes origins: no trailing slash, lowercase", async () => {
+    const { normalizeOrigin } = await import("./product.js");
+    expect(normalizeOrigin(`${dev}/`)).toBe(dev);
+    expect(normalizeOrigin(`${dev}//`)).toBe(dev);
+    expect(normalizeOrigin(dev)).toBe(dev);
+    expect(normalizeOrigin(` ${dev.toUpperCase()}/ `)).toBe(dev);
+    expect(normalizeOrigin("")).toBeNull();
+    expect(normalizeOrigin("/")).toBeNull();
+    expect(normalizeOrigin(undefined)).toBeNull();
+    expect(normalizeOrigin(["x"])).toBeNull();
+  });
+
+  it("accepts only known TabCrew extension origins, with or without the trailing slash", async () => {
+    const { isTabcrewExtensionOrigin } = await import("./product.js");
+    expect(isTabcrewExtensionOrigin(dev)).toBe(true);
+    expect(isTabcrewExtensionOrigin(`${dev}/`)).toBe(true);
+    expect(isTabcrewExtensionOrigin(`chrome-extension://${"b".repeat(32)}`)).toBe(false);
+    expect(isTabcrewExtensionOrigin(`${dev}/popup.html`)).toBe(false);
+    expect(isTabcrewExtensionOrigin(`${dev}.evil.example`)).toBe(false);
+    expect(isTabcrewExtensionOrigin("http://127.0.0.1:8775")).toBe(false);
+    expect(isTabcrewExtensionOrigin("null")).toBe(false);
+    expect(isTabcrewExtensionOrigin(undefined)).toBe(false);
+    expect(isTabcrewExtensionOrigin(`chrome-extension://${"b".repeat(32)}`, [`chrome-extension://${"b".repeat(32)}/`])).toBe(true);
+  });
+});

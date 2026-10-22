@@ -38,6 +38,23 @@ export function tabcrewExtensionOrigins(ids: TabCrewExtensionIds = TABCREW_EXTEN
   return tabcrewExtensionIds(ids).map((id) => `chrome-extension://${id}/`);
 }
 
+/**
+ * An origin in comparable form: trimmed, lowercase, without trailing slashes (Chrome sends the
+ * WebSocket `Origin` header as `chrome-extension://<id>`, native messaging manifests use `.../`).
+ * Null for anything that is not a non-empty string.
+ */
+export function normalizeOrigin(origin: unknown): string | null {
+  if (typeof origin !== "string") return null;
+  const normalized = origin.trim().toLowerCase().replace(/\/+$/, "");
+  return normalized || null;
+}
+
+/** Whether a WebSocket `Origin` is one of the allowed TabCrew extension origins (exact match after normalizing). */
+export function isTabcrewExtensionOrigin(origin: unknown, allowed: readonly string[] = tabcrewExtensionOrigins()): boolean {
+  const normalized = normalizeOrigin(origin);
+  return normalized !== null && allowed.some((o) => normalizeOrigin(o) === normalized);
+}
+
 /** PLACEHOLDER until the extension is published on the Chrome Web Store. */
 export const CHROME_WEB_STORE_URL = "https://chromewebstore.google.com/detail/tabcrew/<pending>";
 
