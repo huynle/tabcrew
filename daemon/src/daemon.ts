@@ -4,6 +4,7 @@ import { tabcrewExtensionOrigins } from "@tabcrew/shared/product";
 import { V2_HUB_EXTENSION_PORT, type V2Event } from "@tabcrew/shared/v2";
 import { ExtensionBridge, type BridgeAuth } from "./bridge.js";
 import { Limiter, type JevRuntime } from "./jev/browse.js";
+import { modelCallTransport } from "./jev/decisions.js";
 import type { DaemonConfig } from "./config.js";
 import { DaemonError } from "./errors.js";
 import type { Env } from "./home.js";
@@ -174,7 +175,8 @@ export async function startDaemon(
       textModelBaseUrl: config.textModelBaseUrl,
       textModelReasoning: config.textModelReasoning,
       textModelFallback: config.textModelFallback,
-      textModelTimeoutMs: config.textModelTimeoutMs,
+      // Hub mode: the text helper's default budget allows for the extension round trip (jev/text.ts).
+      textModelTimeoutMs: hub ? undefined : config.textModelTimeoutMs,
       decisionProvider: config.decisionProvider,
       decisionModel: config.decisionModel,
       decisionModelApiKey: config.decisionModelApiKey,
@@ -208,6 +210,9 @@ export async function startDaemon(
     onExtRequest: settings ? (op, args) => settings.handle(op, args) : undefined,
     daemonVersion: version,
   });
+
+  // Hub mode: every model call goes through the extension (it holds provider, model and key).
+  if (hub) jev.transport = modelCallTransport(bridge);
 
   const ctx: ToolContext = { registry, bridge, scheduler, observations, jev };
   const mcp = hub

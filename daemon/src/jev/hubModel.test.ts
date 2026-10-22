@@ -1,7 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { V2ModelCallBody, V2ModelPurpose } from "@tabcrew/shared/v2";
-import { ModelCallUnavailableError, type ModelCallResult } from "../bridge.js";
+import { ModelCallUnavailableError, type ExtensionBridge, type ModelCallResult } from "../bridge.js";
 import { DaemonError } from "../errors.js";
+import { actionSpace } from "../observe.js";
+import { flightsSnapshot } from "../testing/fixtures.js";
+import { CHAT_DECISION, chooseChat, decider, missingDecisionKey } from "./chat.js";
+import { TEXT_VALUE } from "./questions.js";
+import { fieldContext, fieldText } from "./text.js";
 import {
   httpTransport,
   modelCallTransport,
@@ -133,6 +138,149 @@ describe("sendModel over model_call", () => {
     const { bridge, calls } = fakeBridge(() => ({ status: 200, json: {}, model: "m" }));
     await expect(sendModel(modelCallTransport(bridge), { body: BODY }, OPTS)).rejects.toBeInstanceOf(DaemonError);
     expect(calls).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Hub mode decisions (chat only, via model_call)
+// ---------------------------------------------------------------------------
+
+/** A Provider-shaped chat completion: usage.cost is an object. */
+function providerCompletion(content: string, model = "gemini-3.6-flash"): ModelCallResult {
+  return {
+    status: 200,
+    model,
+    json: {
+      id: "chatcmpl-1",
+      object: "chat.completion",
+      model,
+      choices: [{ index: 0, message: { role: "assistant", content }, finish_reason: "stop" }],
+      usage: { prompt_tokens: 1200, completion_tokens: 25, total_tokens: 1225, cost: { input_cost: 0.0001, output_cost: 0.0002, total_cost: 0.0003 } },
+    },
+  };
+}
+
+function hubSettings(bridge: Pick<ExtensionBridge, "modelCall">, extra: Partial<ModelSettings> = {}): ModelSettings {
+  // Hub config carries no keys and (by default) the jev provider: the transport alone selects hub behaviour.
+  return {
+    jevModel: "typesafe/jev-1.13",
+    textModel: "inception/mercury-2.5",
+    openrouterApiKey: undefined,
+    textModelReasoning: "none",
+    retryBaseMs: 1,
+    transport: modelCallTransport(bridge),
+    ...extra,
+  };
+}
+
+describe("hub-mode chat decisions", () => {
+  const snap = flightsSnapshot();
+  const space = actionSpace(snap.actions);
+
+  it("needs no key, whatever decision provider the config names", () => {
+    const { bridge } = fakeBridge(() => providerCompletion("{}"));
+    for (const decisionProvider of ["jev", "chat", "auto"] as const) {
+      expect(missingDecisionKey(hubSettings(bridge, { decisionProvider }))).toBe(false);
+    }
+  });
+
+  it("always decides by chat over model_call: purpose chat_decision, no model/reasoning, model and Provider cost from the reply", async () => {
+    const { bridge, calls } = fakeBridge(() =>
+      providerCompletion('```json\n{"operation": "CLICK", "target": "1", "confidence": 0.7, "reason": "open picker"}\n```'),
+    );
+    const decide = decider(hubSettings(bridge, { decisionProvider: "jev", decisionModel: "placeholder" }));
+    const d = await decide(snap, space, "Open the origin picker", []);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].purpose).toBe("chat_decision");
+    expect(Object.keys(calls[0].body)).toEqual(["messages", "max_tokens", "response_format"]);
+    expect(calls[0].body.max_tokens).toBe(400);
+    expect(calls[0].body.response_format).toEqual({ type: "json_object" });
+    expect(calls[0].body.messages[0]).toEqual({ role: "system", content: CHAT_DECISION });
+    expect(JSON.parse(calls[0].body.messages[1].content)).toMatchObject({ goal: "Open the origin picker" });
+    expect(calls[0].timeoutMs).toBe(25_000);
+    expect(d).toMatchObject({
+      provider: "chat",
+      model: "gemini-3.6-flash",
+      operation: "CLICK",
+      target: "1",
+      reason: "open picker",
+      usage: { input_tokens: 1200, output_tokens: 25, cost: 0.0003 },
+    });
+  });
+
+  it("turns model_not_configured into a model_error that points at the popup", async () => {
+    const { bridge } = fakeBridge(() => {
+      throw new DaemonError("model_not_configured", "set a model provider in the TabCrew popup");
+    });
+    const err = await rejection(chooseChat(snap, space, "g", [], hubSettings(bridge)));
+    expect(err).toMatchObject({ code: "model_error", message: expect.stringContaining("TabCrew popup (Model provider)") });
+    expect((err as Error).message).not.toMatch(/OpenRouter|\.tabcrew/);
+  });
+
+  it("keeps unavailability errors as ModelUnavailableError", async () => {
+    const { bridge } = fakeBridge(() => {
+      throw new ModelCallUnavailableError("offline", "TabCrew extension is not connected; no model call made.");
+    });
+    await expect(chooseChat(snap, space, "g", [], hubSettings(bridge))).rejects.toBeInstanceOf(ModelUnavailableError);
+  });
+});
+
+describe("hub-mode text helper", () => {
+  const context = () => fieldContext("Fly to Zurich", flightsSnapshot().actions[0], flightsSnapshot(), []);
+  const timedOut = () => new ModelCallUnavailableError("timeout", "Model request timed out; no action executed.");
+  const notConfigured = () => new DaemonError("model_not_configured", "set a model provider in the TabCrew popup");
+
+  it("asks purpose text with only messages/max_tokens/response_format, 8 s per attempt; model and Provider cost from the reply", async () => {
+    const { bridge, calls } = fakeBridge(() => providerCompletion('```json\n{"text": "Zurich"}\n```', "claude-haiku-4-5"));
+    const r = await fieldText(context(), hubSettings(bridge));
+    expect(r).toMatchObject({ text: "Zurich", model: "claude-haiku-4-5", cost: 0.0003 });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ purpose: "text", timeoutMs: 8_000 });
+    expect(Object.keys(calls[0].body)).toEqual(["messages", "max_tokens", "response_format"]);
+    expect(calls[0].body.max_tokens).toBe(1024);
+    expect(calls[0].body.messages[0]).toEqual({ role: "system", content: TEXT_VALUE });
+  });
+
+  it("uses an explicit text timeout", async () => {
+    const { bridge, calls } = fakeBridge(() => providerCompletion('{"text": "a"}'));
+    await fieldText(context(), hubSettings(bridge, { textModelTimeoutMs: 1500 }));
+    expect(calls[0].timeoutMs).toBe(1500);
+  });
+
+  it("falls back to text_fallback once when text fails", async () => {
+    const { bridge, calls } = fakeBridge((purpose) => {
+      if (purpose === "text") throw timedOut();
+      return providerCompletion('{"text": "London"}', "gemini-3.1-flash-lite");
+    });
+    expect(await fieldText(context(), hubSettings(bridge))).toMatchObject({ text: "London", model: "gemini-3.1-flash-lite" });
+    expect(calls.map((c) => c.purpose)).toEqual(["text", "text_fallback"]);
+  });
+
+  it("no fallback configured (model_not_configured): surfaces the first error", async () => {
+    const { bridge, calls } = fakeBridge((purpose) => {
+      if (purpose === "text") return { status: 401, json: { error: { message: "bad token" } }, model: "m" };
+      throw notConfigured();
+    });
+    const err = await rejection(fieldText(context(), hubSettings(bridge)));
+    expect(err).toMatchObject({ code: "model_error", message: expect.stringContaining("HTTP 401") });
+    expect(calls.map((c) => c.purpose)).toEqual(["text", "text_fallback"]);
+  });
+
+  it("no provider at all: a model_error pointing at the popup", async () => {
+    const { bridge, calls } = fakeBridge(() => {
+      throw notConfigured();
+    });
+    const err = await rejection(fieldText(context(), hubSettings(bridge)));
+    expect(err).toMatchObject({ code: "model_error", message: expect.stringContaining("TabCrew popup (Model provider)") });
+    expect(calls.map((c) => c.purpose)).toEqual(["text", "text_fallback"]);
+  });
+
+  it("a failing fallback reports its own error", async () => {
+    const { bridge } = fakeBridge((purpose) => {
+      if (purpose === "text") throw timedOut();
+      return { status: 500, json: null, model: "m" };
+    });
+    await expect(fieldText(context(), hubSettings(bridge))).rejects.toMatchObject({ code: "model_error", message: expect.stringContaining("HTTP 500") });
   });
 });
 

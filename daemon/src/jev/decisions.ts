@@ -34,6 +34,16 @@ export interface ModelSettings {
   readonly decisionModelApiKey?: string;
   readonly decisionModelBaseUrl?: string;
   readonly decisionModelReasoning?: string;
+  /**
+   * How model requests are sent. Unset/HTTP: daemon mode (keys, URLs, OpenRouter fields from these
+   * settings). model_call: hub mode — the extension owns provider, model and key; decisions are chat-only.
+   */
+  readonly transport?: ModelTransport;
+}
+
+/** Hub mode: model calls go through the extension (`model_call`). */
+export function viaExtension(settings: Pick<ModelSettings, "transport">): boolean {
+  return settings.transport?.kind === "model_call";
 }
 
 export const DECISION_PROVIDERS = ["jev", "chat", "auto"] as const;
@@ -133,6 +143,13 @@ export const httpTransport: ModelTransport = {
 /** Where hub-mode users fix provider settings. */
 export const HUB_PROVIDER_SETTINGS = "the TabCrew popup (Model provider)";
 
+/** Hub mode: `model_not_configured` from the extension becomes a `model_error` the agent can relay; other errors pass through. */
+export function notConfiguredError(err: unknown): unknown {
+  if (!(err instanceof DaemonError) || err.code !== "model_not_configured") return err;
+  const detail = err.message.replace(/[\s.;]+$/, "");
+  return modelError(`No model provider available (${detail}): set the provider, key and models in ${HUB_PROVIDER_SETTINGS}; no action executed.`);
+}
+
 function providerMessage(json: unknown): string {
   const error = (json as { error?: unknown } | null)?.error;
   const message = typeof error === "string" ? error : (error as { message?: unknown } | null)?.message;
@@ -169,11 +186,11 @@ export function modelCallTransport(bridge: Pick<ExtensionBridge, "modelCall">): 
       const detail = providerMessage(json);
       const fix =
         status === 401 || status === 403
-          ? `check the API key and headers in ${HUB_PROVIDER_SETTINGS}`
+          ? `; check the API key and headers in ${HUB_PROVIDER_SETTINGS}`
           : status === 404
-            ? `check the base URL and model in ${HUB_PROVIDER_SETTINGS}`
-            : `check ${HUB_PROVIDER_SETTINGS}`;
-      return `${detail ? ` (${detail})` : ""}; ${fix}`;
+            ? `; check the base URL and model in ${HUB_PROVIDER_SETTINGS}`
+            : "";
+      return `${detail ? ` (${detail})` : ""}${fix}`;
     },
   };
 }
