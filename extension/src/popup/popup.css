@@ -169,3 +169,36 @@ button:disabled {
 a {
   color: #175cd3;
 }
+[hidden] {
+  display: none !important;
+}
+select {
+  padding: 3px 4px;
+}
+select.wide {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+}
+#provider-group label {
+  margin-top: 6px;
+}
+.status.untrusted_hub {
+  background: #fee4e2;
+  color: #b42318;
+}
+.header-row {
+  margin-bottom: 4px;
+}
+.header-row input {
+  flex: 1;
+}
+.row.buttons {
+  margin-top: 8px;
+}
+.note.ok {
+  color: #05603a;
+}
+#trust-row {
+  margin-top: 4px;
+}
