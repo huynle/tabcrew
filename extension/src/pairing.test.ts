@@ -71,6 +71,42 @@ describe("Pairing", () => {
     expect(await pairing.repair(null)).toBe(false);
   });
 
+  it("never asks the host in hub mode", async () => {
+    const { d } = deps(async () => ({ token: TOKEN_A }));
+    const pairing = new Pairing({ ...d, loadModeSetting: async () => "hub" });
+    expect(await pairing.ensurePaired()).toBe("skipped");
+    expect(await pairing.repair(TOKEN_A)).toBe(false);
+    expect(d.sendNativeMessage).not.toHaveBeenCalled();
+  });
+
+  it("asks the host only once in auto mode without a token (no pairing loop while in hub mode)", async () => {
+    const { d } = deps(async () => {
+      throw new Error("Access to the specified native messaging host is forbidden.");
+    });
+    const pairing = new Pairing({ ...d, loadModeSetting: async () => "auto" });
+    expect(await pairing.ensurePaired()).toBe("failed");
+    expect(await pairing.ensurePaired()).toBe("skipped");
+    expect(await pairing.ensurePaired()).toBe("skipped");
+    expect(d.sendNativeMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("auto mode pairs on that one attempt when a daemon is installed", async () => {
+    const { d, token } = deps(async () => ({ token: TOKEN_A }));
+    const pairing = new Pairing({ ...d, loadModeSetting: async () => "auto" });
+    expect(await pairing.ensurePaired()).toBe("paired");
+    expect(token()).toBe(TOKEN_A);
+  });
+
+  it("keeps retrying in daemon mode", async () => {
+    const { d } = deps(async () => {
+      throw new Error("Specified native messaging host not found.");
+    });
+    const pairing = new Pairing({ ...d, loadModeSetting: async () => "daemon" });
+    await pairing.ensurePaired();
+    await pairing.ensurePaired();
+    expect(d.sendNativeMessage).toHaveBeenCalledTimes(2);
+  });
+
   it("a re-pair that returns the rejected token changes nothing", async () => {
     const { d } = deps(async () => ({ token: TOKEN_A }), TOKEN_A);
     const pairing = new Pairing(d);
