@@ -153,6 +153,8 @@ describe("service worker pairing", () => {
   });
 
   it("reports not paired when the host is missing, and retries from the keepalive alarm", async () => {
+    // Daemon mode explicitly: without a token, "auto" is hub mode (no pairing loop there).
+    await fake.chrome.storage.local.set({ "v2:mode": "daemon" });
     await fake.chrome.storage.local.remove("v2:token");
     await boot();
     const state = await popupState();

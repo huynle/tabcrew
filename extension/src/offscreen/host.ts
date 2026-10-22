@@ -2,12 +2,14 @@
  * The offscreen-document side of the bridge: owns the daemon WebSocket (`Bridge`) and relays
  * requests, welcome and status to the service worker over one `chrome.runtime` port.
  *
- * Offscreen documents only get `chrome.runtime`, so the token and port arrive from the service
- * worker as `config` messages. If the port drops (service worker restarted), it is reopened; any
+ * Offscreen documents only get `chrome.runtime`, so the token, port, mode and hub pin arrive from
+ * the service worker as `config` messages (and a pin the hub stored goes back as `hub_pin_stored`;
+ * hub `model_call`s go to the service worker, which holds the provider settings). If the port drops (service worker restarted), it is reopened; any
  * request forwarded to the dead service worker simply gets no response (the daemon times it out).
  */
 
 import { v2ServiceInfo, type V2Request, type V2ServiceInfo, type V2Welcome } from "@tabcrew/shared/v2";
+import { parseHubPin } from "../config.js";
 import { Bridge, type SocketLike } from "../bridge.js";
 import type { BridgeConfig, BridgeStatus } from "../config.js";
 import type { BridgeStats, PortLike, ToOffscreen, ToServiceWorker } from "../relay-protocol.js";
@@ -48,6 +50,8 @@ export class OffscreenHost {
         this.post({ type: "status", status });
       },
       onExtResponse: (response) => this.post({ type: "ext_response", response }),
+      onModelCall: (call) => this.post({ type: "model_call", call }),
+      onHubPinStored: (secret) => this.post({ type: "hub_pin_stored", secret }),
     });
   }
 
@@ -99,7 +103,10 @@ export class OffscreenHost {
   private handle(message: ToOffscreen): void {
     switch (message?.type) {
       case "config":
-        this.applyConfig({ token: message.token, port: message.port }, message.reconfigure);
+        this.applyConfig(configFrom(message), message.reconfigure);
+        break;
+      case "model_result":
+        this.bridge.sendModelResult(message.result);
         break;
       case "frame":
         if (message.frame.type === "response") this.bridge.sendResponse(message.frame);
@@ -135,7 +142,13 @@ export class OffscreenHost {
       else void this.bridge.start();
       return;
     }
-    if (reconfigure || previous.token !== config.token || previous.port !== config.port) {
+    // A pin that only became confirmed keeps the connection; the next hello challenges the hub.
+    const changed =
+      previous.token !== config.token ||
+      previous.port !== config.port ||
+      previous.mode !== config.mode ||
+      previous.hubPin?.secret !== config.hubPin?.secret;
+    if (reconfigure || changed) {
       void this.bridge.reconfigure();
     } else {
       void this.bridge.ensureConnected();
@@ -167,4 +180,9 @@ export class OffscreenHost {
       this.portTimer = null;
     }
   }
+}
+
+function configFrom(message: Extract<ToOffscreen, { type: "config" }>): BridgeConfig {
+  if (message.mode !== "hub") return { token: message.token, port: message.port, mode: "daemon" };
+  return { token: null, port: message.port, mode: "hub", hubPin: parseHubPin(message.hub_pin) };
 }

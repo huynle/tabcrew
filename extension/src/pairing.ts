@@ -6,9 +6,15 @@
  * - No token stored → ask the host (retried from the keepalive alarm while unpaired).
  * - The daemon rejected the stored token (4401) → ask the host once per rejected token; a different
  *   token means the daemon's token changed (e.g. reinstall), so it replaces the stored one.
+ *
+ * Connection mode (`v2:mode`): "daemon" pairs as above; "hub" never asks the host (hub mode has no
+ * token, and locked-down Chrome blocks native messaging); "auto" without a token is hub mode, so the
+ * host is asked once per service-worker life (a successful pairing stores a token, which switches
+ * auto to daemon mode) and not from the keepalive loop.
  */
 
 import { NATIVE_HOST_NAME, type PairRequest } from "@tabcrew/shared/product";
+import type { ModeSetting } from "./config.js";
 
 export const NOT_PAIRED_TEXT = "not paired: run npx tabcrew setup";
 
@@ -16,15 +22,18 @@ export interface PairingDeps {
   sendNativeMessage(host: string, message: PairRequest): Promise<unknown>;
   loadToken(): Promise<string | null>;
   saveToken(token: string): Promise<void>;
+  /** The stored mode setting; absent means "daemon" (always pair while no token is stored). */
+  loadModeSetting?(): Promise<ModeSetting>;
 }
 
-/** "same": the host returned the token that is already stored. */
-export type PairOutcome = "already_paired" | "paired" | "same" | "failed";
+/** "same": the host returned the token that is already stored. "skipped": not asked (hub mode). */
+export type PairOutcome = "already_paired" | "paired" | "same" | "failed" | "skipped";
 
 export class Pairing {
   private inFlight: Promise<PairOutcome> | null = null;
   private repairedFor: string | null = null;
   private _lastError: string | null = null;
+  private autoAttempted = false;
 
   constructor(private readonly deps: PairingDeps) {}
 
@@ -36,6 +45,12 @@ export class Pairing {
   /** Pair if no token is stored. */
   async ensurePaired(): Promise<PairOutcome> {
     if (await this.deps.loadToken()) return "already_paired";
+    const mode = (await this.deps.loadModeSetting?.()) ?? "daemon";
+    if (mode === "hub") return "skipped";
+    if (mode === "auto") {
+      if (this.autoAttempted) return "skipped";
+      this.autoAttempted = true;
+    }
     return this.pair(null);
   }
 
@@ -45,6 +60,7 @@ export class Pairing {
    */
   async repair(rejectedToken: string | null): Promise<boolean> {
     if (rejectedToken === null || this.repairedFor === rejectedToken) return false;
+    if ((await this.deps.loadModeSetting?.()) === "hub") return false;
     this.repairedFor = rejectedToken;
     return (await this.pair(rejectedToken)) === "paired";
   }
