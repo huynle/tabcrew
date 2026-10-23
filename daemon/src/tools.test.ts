@@ -4,6 +4,8 @@ import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import type { V2Request } from "@tabcrew/shared/v2";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { RunningDaemon } from "./daemon.js";
+import { CLOSE_REMINDER } from "./jev/browse.js";
+import { HANDED_OVER_NOTE } from "./mcp/tools.js";
 import { SessionRegistry } from "./sessions.js";
 import { flightsSnapshot } from "./testing/fixtures.js";
 import { call, FakeExtension, mcpClient, startTestDaemon, tempHome, until, WireError } from "./testing/helpers.js";
@@ -396,22 +398,35 @@ describe("persistence and reconcile", () => {
 });
 
 describe("cleanup when agents are done", () => {
-  it("tells agents at connect time to close their session, and that their tabs are handed to the user for review", async () => {
+  it("tells agents about the shared TabCrew group, finish modes, and that tabs are left for the user to review by default", async () => {
     const { client } = await setup();
     const instructions = client.getInstructions() ?? "";
     expect(instructions).toMatch(/session_close/);
     expect(instructions).toMatch(/review/);
     expect(instructions).toMatch(/tab_close/);
+    expect(instructions).toMatch(/"TabCrew"/);
+    expect(instructions).toMatch(/only (see and )?control your own tabs/);
     const tools = await client.listTools();
-    const open = tools.tools.find((t) => t.name === "session_open")?.description ?? "";
-    const close = tools.tools.find((t) => t.name === "session_close")?.description ?? "";
+    const desc = (name: string) => tools.tools.find((t) => t.name === name)?.description ?? "";
+    const open = desc("session_open");
+    const close = desc("session_close");
     expect(open).toMatch(/session_close/);
     expect(open).toMatch(/review/);
+    expect(open).toMatch(/"TabCrew"/);
+    expect(open).toMatch(/group/);
     expect(close).toMatch(/hand its tabs to the user for review/);
     expect(close).toMatch(/tab_close/);
-    for (const text of [instructions, open, close]) {
-      expect(text).not.toMatch(/closes? your tabs|window closes|tabs and window are closed/i);
+    // Finish modes are documented, and the default is the user's choice in the popup.
+    for (const mode of ["keep", "close", "collect"]) expect(close).toContain(`"${mode}"`);
+    expect(close).toMatch(/TabCrew popup/);
+    expect(desc("group_rename")).toMatch(/never/);
+    expect(desc("group_list")).toMatch(/mine/);
+    // Tabs are no longer moved into the user's own window, and nothing claims they are closed by
+    // default: closing only happens when the agent or the user asks for "close".
+    for (const text of [instructions, open, close, CLOSE_REMINDER]) {
+      expect(text).not.toMatch(/into (the user's|their) (own )?window|window closes|tabs and window are closed/i);
     }
+    for (const text of [instructions, open, CLOSE_REMINDER]) expect(text).not.toMatch(/closes? your tabs/i);
   });
 
   it("session_close hands the tabs over (session_release), never closes them, and the handle is dead afterwards", async () => {
@@ -497,5 +512,197 @@ describe("cleanup does not fire on daemon shutdown", () => {
     daemon = d;
     expect(d.registry.size).toBe(1);
     void s;
+  });
+});
+
+describe("shared groups", () => {
+  async function setupWith(features: string[], overrides = {}) {
+    daemon = await startTestDaemon(home, overrides);
+    const client = await mcpClient(daemon.mcpPort, daemon.token);
+    clients.push(client);
+    const ext = await FakeExtension.connect(daemon.extensionPort, daemon.token, { features });
+    extensions.push(ext);
+    return { d: daemon, client, ext };
+  }
+  const groupsExt = (overrides = {}) => setupWith(["groups"], overrides);
+  const legacyExt = (overrides = {}) => setupWith([], overrides);
+
+  async function openIn(client: Client, label: string, group?: string) {
+    const s = await call(client, "session_open", group === undefined ? { label } : { label, group });
+    if (!s.ok) throw new Error(`open failed: ${JSON.stringify(s.error)}`);
+    const t = await call(client, "tab_create", { session: s.value.session });
+    if (!t.ok) throw new Error(`tab_create failed: ${JSON.stringify(t.error)}`);
+    return { S: s.value.session as string, short_id: s.value.short_id as string, tab: t.value.tab_id as number, opened: s.value };
+  }
+
+  it("session_open validates the group, returns it, and every request carries it", async () => {
+    const { d, client, ext } = await groupsExt();
+    const a = await openIn(client, "a", "  Research \t team ");
+    expect(a.opened).toEqual({ session: a.S, short_id: a.short_id, label: "a", group: "Research team" });
+    expect(d.registry.getByShortId(a.short_id)?.group).toBe("Research team");
+    expect(opsOf(ext, "tab_create").at(-1)?.session).toEqual({ short_id: a.short_id, label: "a", group: "Research team" });
+
+    const plain = await openIn(client, "plain");
+    expect(plain.opened).toEqual({ session: plain.S, short_id: plain.short_id, label: "plain" });
+    expect(opsOf(ext, "tab_create").at(-1)?.session).toEqual({ short_id: plain.short_id, label: "plain" });
+
+    for (const group of ["✓ TabCrew", "x".repeat(41), "   ", "agent · AbCdEfGh", 7]) {
+      const r = await call(client, "session_open", { label: "bad", group });
+      expect(errCode(r)).toBe("invalid_args");
+      expect(!r.ok && r.error.message).toMatch(/^group: /);
+    }
+    expect(d.registry.size).toBe(2);
+  });
+
+  it("with an older extension, session_open keeps the group but warns, and the group is never sent", async () => {
+    const { client, ext } = await legacyExt();
+    const a = await openIn(client, "a", "Research");
+    expect(a.opened.group).toBe("Research");
+    expect(a.opened.note).toMatch(/update the TabCrew extension/);
+    expect(opsOf(ext, "tab_create").at(-1)?.session).toEqual({ short_id: a.short_id, label: "a" });
+    const plain = await call(client, "session_open", { label: "plain" });
+    expect(plain.ok && plain.value.note).toBe(undefined);
+  });
+
+  it("session_close forwards the finish mode and reports what happened", async () => {
+    const { client, ext } = await groupsExt();
+    const cases = [
+      ["keep", { closed: true, kept_tabs: 1, moved: false, mode: "keep" }, /stay in their TabCrew group/],
+      ["close", { closed: true, kept_tabs: 0, moved: false, closed_tabs: 1, mode: "close" }, /were closed/],
+      ["collect", { closed: true, kept_tabs: 1, moved: true, mode: "collect" }, /✓/],
+    ] as const;
+    for (const [mode, expected, note] of cases) {
+      const s = await openIn(client, mode);
+      const r = await call(client, "session_close", { session: s.S, tabs: mode });
+      expect(r.ok).toBe(true);
+      if (!r.ok) continue;
+      const { note: got, ...rest } = r.value;
+      expect(rest).toEqual(expected);
+      expect(got).toMatch(note);
+      expect(opsOf(ext, "session_release").at(-1)?.args).toEqual({ tabs: mode });
+    }
+    // No tabs: the extension applies the user's default (here collect) and reports it.
+    ext.defaultFinishMode = "collect";
+    const s = await openIn(client, "default");
+    const r = await call(client, "session_close", { session: s.S });
+    expect(opsOf(ext, "session_release").at(-1)?.args).toEqual({});
+    expect(r.ok && r.value.mode).toBe("collect");
+    expect(opsOf(ext, "session_close")).toHaveLength(0);
+    expect(opsOf(ext, "tab_close")).toHaveLength(0);
+
+    const bad = await openIn(client, "bad");
+    expect(errCode(await call(client, "session_close", { session: bad.S, tabs: "trash" }))).toBe("invalid_args");
+    expect((await call(client, "tab_list", { session: bad.S })).ok).toBe(true);
+  });
+
+  it("with an older extension, tabs:\"close\" falls back to the legacy session_close op; other modes hand over", async () => {
+    const { client, ext } = await legacyExt();
+    const c = await openIn(client, "close");
+    const r = await call(client, "session_close", { session: c.S, tabs: "close" });
+    expect(opsOf(ext, "session_close").map((q) => q.session.short_id)).toEqual([c.short_id]);
+    expect(opsOf(ext, "session_release")).toHaveLength(0);
+    expect(r.ok && r.value).toMatchObject({ closed: true, kept_tabs: 0, closed_tabs: 1, mode: "close" });
+    expect(r.ok && r.value.note).toMatch(/were closed/);
+
+    for (const mode of ["keep", "collect"]) {
+      const s = await openIn(client, mode);
+      const k = await call(client, "session_close", { session: s.S, tabs: mode });
+      expect(opsOf(ext, "session_release").at(-1)?.args).toEqual({});
+      expect(k).toEqual({ ok: true, value: { closed: true, kept_tabs: 1, moved: true, note: HANDED_OVER_NOTE } });
+    }
+    expect(opsOf(ext, "session_close")).toHaveLength(1);
+  });
+
+  it("sessions ended by a disconnect or the idle sweep use the user's default (no tabs sent)", async () => {
+    const { d, client, ext } = await groupsExt({ idleTimeoutMs: 400, sweepIntervalMs: 20 });
+    const s = await openIn(client, "gone");
+    await (client.transport as { terminateSession(): Promise<void> }).terminateSession();
+    await client.close();
+    await until(() => opsOf(ext, "session_release").length === 1);
+    expect(opsOf(ext, "session_release")[0].args).toEqual({});
+    expect(opsOf(ext, "session_release")[0].session.short_id).toBe(s.short_id);
+
+    const other = await mcpClient(d.mcpPort, d.token);
+    clients.push(other);
+    await openIn(other, "idle", "Idle");
+    await until(() => opsOf(ext, "session_release").length === 2);
+    expect(opsOf(ext, "session_release")[1].args).toEqual({});
+  });
+
+  it("group_list names the TabCrew groups and which one is mine", async () => {
+    const { client, ext } = await groupsExt();
+    const a = await openIn(client, "a", "Docs");
+    const b = await openIn(client, "b");
+    const listed = await call(client, "group_list", { session: a.S });
+    expect(listed).toEqual({ ok: true, value: { groups: [{ name: "Docs", mine: true }, { name: "TabCrew", mine: false }] } });
+    const fromB = await call(client, "group_list", { session: b.S });
+    expect(fromB.ok && fromB.value.groups).toEqual([{ name: "Docs", mine: false }, { name: "TabCrew", mine: true }]);
+    expect(opsOf(ext, "group_list").map((q) => q.args)).toEqual([{}, {}]);
+  });
+
+  it("group_rename renames my group (or a named one) and later requests carry the new name", async () => {
+    const { d, client, ext } = await groupsExt();
+    const a = await openIn(client, "a", "Docs");
+    const a2 = await openIn(client, "a2", "Docs");
+    const b = await openIn(client, "b");
+    const group = (s: { short_id: string }) => d.registry.getByShortId(s.short_id)?.group;
+
+    expect(await call(client, "group_rename", { session: a.S, name: " Manuals " })).toEqual({
+      ok: true,
+      value: { name: "Manuals", previous: "Docs" },
+    });
+    expect(opsOf(ext, "group_rename").at(-1)?.args).toEqual({ name: "Manuals" });
+    expect([group(a), group(a2), group(b)]).toEqual(["Manuals", "Manuals", undefined]);
+    await call(client, "tab_create", { session: a2.S });
+    expect(opsOf(ext, "tab_create").at(-1)?.session.group).toBe("Manuals");
+
+    // b was in the default group: it now carries the new name explicitly.
+    expect(await call(client, "group_rename", { session: b.S, name: "Shared" })).toEqual({
+      ok: true,
+      value: { name: "Shared", previous: "TabCrew" },
+    });
+    expect(group(b)).toBe("Shared");
+
+    // a renames b's group by name; a's own group is untouched.
+    const r = await call(client, "group_rename", { session: a.S, group: "Shared", name: "Team" });
+    expect(r).toEqual({ ok: true, value: { name: "Team", previous: "Shared" } });
+    expect(opsOf(ext, "group_rename").at(-1)?.args).toEqual({ group: "Shared", name: "Team" });
+    expect([group(a), group(b)]).toEqual(["Manuals", "Team"]);
+
+    const sent = opsOf(ext, "group_rename").length;
+    for (const args of [{ name: "✓ done" }, { name: "" }, { name: "x".repeat(41) }, { group: "✓ TabCrew", name: "Ok" }]) {
+      const bad = await call(client, "group_rename", { session: a.S, ...args });
+      expect(errCode(bad)).toBe("invalid_args");
+    }
+    expect(opsOf(ext, "group_rename")).toHaveLength(sent);
+    // The extension's own refusal (no such TabCrew group) reaches the agent unchanged.
+    const unknown = await call(client, "group_rename", { session: a.S, group: "Nope", name: "Other" });
+    expect(errCode(unknown)).toBe("invalid_args");
+    expect([group(a), group(b)]).toEqual(["Manuals", "Team"]);
+  });
+
+  it("group tools need an extension with the groups feature", async () => {
+    const { client, ext } = await legacyExt();
+    const a = await openIn(client, "a");
+    for (const [name, args] of [
+      ["group_list", {}],
+      ["group_rename", { name: "New" }],
+    ] as const) {
+      const r = await call(client, name, { session: a.S, ...args });
+      expect(errCode(r)).toBe("invalid_args");
+      expect(!r.ok && r.error.message).toMatch(/update the TabCrew extension/);
+    }
+    expect(opsOf(ext, "group_list")).toHaveLength(0);
+    expect(opsOf(ext, "group_rename")).toHaveLength(0);
+  });
+
+  it("group tools refuse stopped and closed sessions", async () => {
+    const { d, client, ext } = await groupsExt();
+    const a = await openIn(client, "a");
+    ext.send({ type: "event", event: "stop", short_id: a.short_id });
+    await until(() => d.registry.getByShortId(a.short_id)?.stopped === true);
+    expect(errCode(await call(client, "group_list", { session: a.S }))).toBe("stopped_by_user");
+    expect(errCode(await call(client, "group_rename", { session: a.S, name: "X" }))).toBe("stopped_by_user");
+    expect(errCode(await call(client, "group_list", { session: "s_AAAAAAAAAAAAAAAAAAAAAA" }))).toBe("bad_session");
   });
 });

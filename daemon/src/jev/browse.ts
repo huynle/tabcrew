@@ -19,7 +19,7 @@ const FINAL_ROWS = 30;
 const DONE_NOTE = "DONE is Jev's claim; verify the page yourself with observe/read the result";
 /** Every browse result reminds the agent to clean up once it no longer needs the tab. */
 export const CLOSE_REMINDER =
-  "When you are finished, call session_close: your tabs stay open for the user to review in their window; close any throwaway tabs first with tab_close.";
+  'When you are finished, close any throwaway tabs with tab_close, then call session_close: by default your tabs stay open for the user to review (pass tabs: "close" to close them instead).';
 
 /** FIFO counting semaphore for concurrent browse loops. */
 export class Limiter {

@@ -58,7 +58,24 @@ describe("McpSocketServer", () => {
     expect(c.getServerVersion()).toMatchObject({ name: "tabcrew", version: "9.9.9" });
     expect(c.getInstructions()).toMatch(/session_open/);
     const { tools } = await c.listTools();
-    expect(tools.map((t) => t.name)).toContain("session_open");
+    expect(tools.map((t) => t.name).sort()).toEqual(
+      [
+        "act",
+        "browse",
+        "debug_logs",
+        "group_list",
+        "group_rename",
+        "navigate",
+        "observe",
+        "read_text",
+        "screenshot",
+        "session_close",
+        "session_open",
+        "tab_close",
+        "tab_create",
+        "tab_list",
+      ].sort(),
+    );
   });
 
   it("serves two concurrent clients, each owning its sessions; closing one hands only its sessions over", async () => {
