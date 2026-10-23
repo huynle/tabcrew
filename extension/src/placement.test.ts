@@ -50,12 +50,14 @@ function expectUserViewUntouched() {
 }
 
 describe("placement setting", () => {
-  it("defaults to shared_window when nothing is stored (opened like own_window until shared groups land)", async () => {
+  it("defaults to shared_window when nothing is stored: the shared TabCrew group in the TabCrew window", async () => {
     expect(await loadPlacement()).toBe("shared_window");
     const a = (await call(alice, "tab_create", {})) as Info;
     expect(fake.chrome.windows.create).toHaveBeenCalledTimes(1);
     expect(tabOf(a).windowId).not.toBe(user.win.id);
-    expect((await fake.chrome.storage.session.get("v2:placements"))["v2:placements"]).toEqual({ [alice.short_id]: "own_window" });
+    expect(groupOf(a).title).toBe("TabCrew");
+    expect((await fake.chrome.storage.session.get("v2:placements"))["v2:placements"]).toEqual({ [alice.short_id]: "shared_window" });
+    expect((await fake.chrome.storage.local.get("v2:tabcrewWindow"))["v2:tabcrewWindow"]).toBe(tabOf(a).windowId);
   });
 
   it("treats an unknown stored value as shared_window", async () => {
@@ -140,7 +142,7 @@ describe("user_window placement", () => {
     // An own_window session's finished group still goes to the user's window.
     await setPlacement("own_window");
     await call(bob, "tab_create", {});
-    expect(await call(bob, "session_release")).toEqual({ kept_tabs: 1, moved: true });
+    expect(await call(bob, "session_release")).toEqual({ kept_tabs: 1, moved: true, mode: "keep" });
     expect([...fake.groups.values()].find((g) => g.title === "✓ bob")!.windowId).toBe(user.win.id);
     expect(user.tab.active).toBe(true);
   });
@@ -194,7 +196,7 @@ describe("user_window placement", () => {
     groupOf(a1).collapsed = false;
     const groupId = tabOf(a1).groupId;
 
-    expect(await call(alice, "session_release")).toEqual({ kept_tabs: 2, moved: true });
+    expect(await call(alice, "session_release")).toEqual({ kept_tabs: 2, moved: true, mode: "keep" });
     expect(fake.groups.get(groupId)).toMatchObject({ title: "✓ alice", collapsed: true, windowId: user.win.id });
     expect(fake.chrome.tabGroups.move).not.toHaveBeenCalled();
     expect(fake.chrome.tabs.move).not.toHaveBeenCalled();
@@ -259,6 +261,7 @@ describe("user_window placement", () => {
 
 describe("switching the setting mid-session", () => {
   it("does not move an existing own_window session", async () => {
+    await setPlacement("own_window");
     const a1 = (await call(alice, "tab_create", {})) as Info;
     await setPlacement("user_window");
     const a2 = (await call(alice, "tab_create", {})) as Info;
@@ -298,7 +301,7 @@ describe("reconcile", () => {
     fake.chrome.tabs.update.mockClear();
     await call(alice, "snapshot", { tab_id: a.tab_id }, fresh).catch(() => undefined);
     expect(fake.chrome.tabs.update).not.toHaveBeenCalled();
-    expect(await call(alice, "session_release", {}, fresh)).toEqual({ kept_tabs: 1, moved: true });
+    expect(await call(alice, "session_release", {}, fresh)).toEqual({ kept_tabs: 1, moved: true, mode: "keep" });
     expect(fake.chrome.tabGroups.move).not.toHaveBeenCalled();
   });
 
