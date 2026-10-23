@@ -1,21 +1,16 @@
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tabcrewExtensionOrigins } from "@tabcrew/shared/product";
-import { V2_HUB_EXTENSION_PORT, type V2Event } from "@tabcrew/shared/v2";
-import { ExtensionBridge, type BridgeAuth } from "./bridge.js";
+import { V2_HUB_EXTENSION_PORT } from "@tabcrew/shared/v2";
+import type { BridgeAuth } from "./bridge.js";
+import { createCore, type TabcrewCore } from "./core.js";
 import { Limiter, type JevRuntime } from "./jev/browse.js";
-import { modelCallTransport } from "./jev/decisions.js";
 import type { DaemonConfig } from "./config.js";
-import { DaemonError } from "./errors.js";
 import type { Env } from "./home.js";
 import { log } from "./log.js";
 import { McpHttpServer } from "./mcp/httpServer.js";
 import { McpSocketServer } from "./mcp/socketServer.js";
-import { closeSession, type ToolContext } from "./mcp/tools.js";
-import { ObservationCache } from "./observe.js";
 import type { PinStore } from "./pin.js";
-import { Scheduler } from "./scheduler.js";
-import { SessionRegistry, type Session } from "./sessions.js";
 import { SettingsService } from "./settings.js";
 import { ensureHome, ensureToken } from "./token.js";
 
@@ -64,17 +59,8 @@ export interface HubModeOptions {
   readonly onIdle?: () => void;
 }
 
-interface RunningCore {
+interface RunningCore extends TabcrewCore {
   readonly extensionPort: number;
-  readonly registry: SessionRegistry;
-  readonly bridge: ExtensionBridge;
-  readonly scheduler: Scheduler;
-  readonly observations: ObservationCache;
-  /** Live Jev settings (replaced when the popup changes settings). */
-  readonly jev: JevRuntime;
-  /** End idle sessions now, handing their tabs to the user (also runs on a timer). */
-  sweepIdle(): Promise<void>;
-  close(): Promise<void>;
 }
 
 /** The launchd daemon: token auth, HTTP MCP endpoint. */
@@ -105,9 +91,6 @@ export function daemonVersion(): string {
   }
 }
 
-const STOPPED = (): DaemonError =>
-  new DaemonError("stopped_by_user", "the user pressed Stop for this session in Chrome; ask the user before continuing");
-
 export function startDaemon(config: DaemonConfig, overrides?: DaemonOverrides): Promise<RunningDaemon>;
 export function startDaemon(config: DaemonConfig, overrides: DaemonOverrides | undefined, hub: HubModeOptions): Promise<RunningHub>;
 export async function startDaemon(
@@ -127,44 +110,6 @@ export async function startDaemon(
     ? { kind: "hub", allowedOrigins: hub.allowedOrigins ?? tabcrewExtensionOrigins(), pinStore: hub.pinStore }
     : { kind: "token", token };
   const idleTimeoutMs = overrides.idleTimeoutMs ?? config.idleTimeoutMinutes * 60_000;
-
-  const registry = new SessionRegistry({ file: join(stateDir, "sessions.json"), idleTimeoutMs });
-  registry.load();
-  const scheduler = new Scheduler();
-  const observations = new ObservationCache();
-  registry.onTabRemoved((tabId, shortId) => {
-    scheduler.dropTab(tabId, new DaemonError("tab_gone", `tab ${tabId} is gone; use tab_list or tab_create`));
-    observations.forget(shortId, tabId);
-  });
-
-  const stopSessions = (shortId: string | null): void => {
-    const stopped = registry.stop(shortId);
-    for (const session of stopped) {
-      scheduler.dropSession(session.short_id, STOPPED());
-      for (const tabId of session.tabs) scheduler.dropTab(tabId, STOPPED());
-      observations.forgetSession(session.short_id);
-    }
-    log.info(`extension: stop requested for ${shortId ?? "all sessions"} (${stopped.length} stopped)`);
-  };
-
-  const onEvent = (event: V2Event): void => {
-    switch (event.event) {
-      case "groups":
-        registry.reconcile(event.groups);
-        return;
-      case "tab_adopted":
-        if (typeof event.short_id === "string" && event.tab && Number.isInteger(event.tab.tab_id)) {
-          registry.addTab(event.short_id, event.tab.tab_id, { steal: false });
-        }
-        return;
-      case "tab_removed":
-        if (typeof event.short_id === "string" && Number.isInteger(event.tab_id)) registry.removeTab(event.short_id, event.tab_id);
-        return;
-      case "stop":
-        stopSessions(typeof event.short_id === "string" ? event.short_id : null);
-        return;
-    }
-  };
 
   const jev: JevRuntime = {
     settings: {
@@ -198,23 +143,25 @@ export async function startDaemon(
       });
 
   const version = daemonVersion();
-  const bridge = new ExtensionBridge({
-    auth,
-    port: hub ? (hub.extensionPort ?? V2_HUB_EXTENSION_PORT) : config.extensionPort,
-    offlineWaitMs: overrides.offlineWaitMs ?? (hub ? HUB_OFFLINE_WAIT_MS : undefined),
-    helloTimeoutMs: overrides.helloTimeoutMs,
-    pingIntervalMs: overrides.pingIntervalMs,
-    defaultRequestTimeoutMs: overrides.requestTimeoutMs,
-    sessions: () => registry.refs(),
-    onEvent,
-    onExtRequest: settings ? (op, args) => settings.handle(op, args) : undefined,
-    daemonVersion: version,
+  const core = createCore({
+    bridge: {
+      auth,
+      port: hub ? (hub.extensionPort ?? V2_HUB_EXTENSION_PORT) : config.extensionPort,
+      offlineWaitMs: overrides.offlineWaitMs ?? (hub ? HUB_OFFLINE_WAIT_MS : undefined),
+      helloTimeoutMs: overrides.helloTimeoutMs,
+      pingIntervalMs: overrides.pingIntervalMs,
+      defaultRequestTimeoutMs: overrides.requestTimeoutMs,
+      onExtRequest: settings ? (op, args) => settings.handle(op, args) : undefined,
+      daemonVersion: version,
+    },
+    jev,
+    // Hub mode: every model call goes through the extension (it holds provider, model and key).
+    modelViaExtension: !!hub,
+    sessionsFile: join(stateDir, "sessions.json"),
+    idleTimeoutMs,
+    sweepIntervalMs: overrides.sweepIntervalMs,
   });
-
-  // Hub mode: every model call goes through the extension (it holds provider, model and key).
-  if (hub) jev.transport = modelCallTransport(bridge);
-
-  const ctx: ToolContext = { registry, bridge, scheduler, observations, jev };
+  const { ctx } = core;
   const mcp = hub
     ? new McpSocketServer({
         ...ctx,
@@ -231,60 +178,38 @@ export async function startDaemon(
         version,
       });
 
-  const extensionPort = await bridge.start();
+  let extensionPort: number;
+  try {
+    extensionPort = await core.bridge.start();
+  } catch (err) {
+    await core.close({ save: false });
+    throw err;
+  }
   let mcpPort = 0;
   try {
     if (mcp instanceof McpSocketServer) await mcp.start();
     else mcpPort = await mcp.start();
   } catch (err) {
-    await bridge.close();
+    await core.close({ save: false });
     throw err;
-  }
-
-  const closeIdle = async (session: Session): Promise<void> => {
-    // Idle sessions finish with the user's default (from the popup); a stopped session's tabs stay exactly where they are.
-    const release = !session.stopped;
-    try {
-      await closeSession(ctx, session, release);
-      log.info(`session ${session.short_id} ended after idle timeout${release ? " (tabs finished with the user's default)" : " (stopped; tabs left as they are)"}`);
-    } catch (err) {
-      log.warn(`session ${session.short_id}: finishing its tabs failed (${(err as { code?: string }).code ?? "error"})`);
-    }
-  };
-  const sweepIdle = async (): Promise<void> => {
-    await Promise.all(registry.idleSessions().map(closeIdle));
-  };
-
-  let sweepTimer: NodeJS.Timeout | null = null;
-  if (idleTimeoutMs > 0) {
-    const every = overrides.sweepIntervalMs ?? Math.max(1_000, Math.min(60_000, Math.floor(idleTimeoutMs / 2)));
-    sweepTimer = setInterval(() => void sweepIdle(), every);
-    sweepTimer.unref();
   }
 
   const where = hub ? `mcp unix:${hub.socketPath}` : `mcp http://127.0.0.1:${mcpPort}/mcp`;
   log.info(
-    `tabcrew-${hub ? "hub" : "daemon"} ${version} listening: ${where}, extension ws://127.0.0.1:${extensionPort}, ${registry.size} session(s) restored`,
+    `tabcrew-${hub ? "hub" : "daemon"} ${version} listening: ${where}, extension ws://127.0.0.1:${extensionPort}, ${core.registry.size} session(s) restored`,
   );
 
-  const core: RunningCore = {
+  const running: RunningCore = {
+    ...core,
     extensionPort,
-    registry,
-    bridge,
-    scheduler,
-    observations,
-    jev,
-    sweepIdle,
     async close() {
-      if (sweepTimer) clearInterval(sweepTimer);
       await mcp.close();
-      await bridge.close();
-      registry.save();
+      await core.close();
     },
   };
   if (mcp instanceof McpSocketServer) {
     return {
-      ...core,
+      ...running,
       mode: "hub",
       socketPath: mcp.socketPath,
       get connectionCount() {
@@ -292,5 +217,5 @@ export async function startDaemon(
       },
     } satisfies RunningHub;
   }
-  return { ...core, mode: "daemon", mcpPort, token } satisfies RunningDaemon;
+  return { ...running, mode: "daemon", mcpPort, token } satisfies RunningDaemon;
 }

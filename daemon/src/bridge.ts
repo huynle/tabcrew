@@ -76,10 +76,13 @@ export const CLOSE_INTERNAL = 1011;
  * - `token`: daemon mode, the shared token in `hello` (Origin optional, any chrome-extension:// id).
  * - `hub`: hub mode, Origin must be one of `allowedOrigins` (normalized), plus the TOFU pin of
  *   `hello.pin` / `auth` against `pinStore` (see shared/v2).
+ * - `relay`: Online mode. The relay runs the socket server and authenticates the extension itself,
+ *   then hands the socket and its hello to `attach`; the bridge only checks the protocol version.
  */
 export type BridgeAuth =
   | { readonly kind: "token"; readonly token: string }
-  | { readonly kind: "hub"; readonly allowedOrigins: readonly string[]; readonly pinStore: PinStore };
+  | { readonly kind: "hub"; readonly allowedOrigins: readonly string[]; readonly pinStore: PinStore }
+  | { readonly kind: "relay" };
 
 export type BridgeOptions = BridgeCommonOptions &
   (
@@ -125,7 +128,8 @@ export const MODEL_CALL_UNSUPPORTED_MESSAGE =
   "the connected TabCrew extension cannot make model calls; update the TabCrew extension and reload it";
 
 export interface BridgeCommonOptions {
-  readonly port: number;
+  /** Port of the bridge's own socket server (`start`); not used by relay bridges. */
+  readonly port?: number;
   readonly host?: string;
   /** How long a request waits for an extension to connect. Default 10 s. */
   readonly offlineWaitMs?: number;
@@ -220,6 +224,8 @@ export class ExtensionBridge {
 
   async start(): Promise<number> {
     const auth = this.auth;
+    if (auth.kind === "relay") throw new Error("a relay bridge has no socket server; the relay hands it sockets with attach()");
+    if (this.options.port === undefined) throw new TypeError("ExtensionBridge.start() needs a port");
     const wss = new WebSocketServer({
       host: this.options.host ?? "127.0.0.1",
       port: this.options.port,
@@ -246,10 +252,25 @@ export class ExtensionBridge {
     const socket = this.active;
     this.active = null;
     if (socket) this.failPending(socket, "daemon shutting down");
-    if (!this.wss) return;
+    if (!this.wss) {
+      // Relay bridges own no server: close the attached socket here.
+      socket?.close(1001, "shutting down");
+      return;
+    }
     for (const client of this.wss.clients) client.terminate();
     await new Promise<void>((resolve) => this.wss!.close(() => resolve()));
     this.wss = null;
+  }
+
+  /**
+   * Relay bridges: take over an extension socket the relay has already authenticated, with the
+   * hello frame it read (protocol checked here; a bad hello closes it with 4401). A newer socket
+   * replaces the current one, as with the bridge's own server.
+   */
+  attach(socket: WebSocket, hello: Record<string, unknown>): void {
+    if (this.auth.kind !== "relay") throw new TypeError("attach() is only for relay bridges");
+    if (socket.readyState !== WebSocket.OPEN) return;
+    this.handleConnection(socket, hello);
   }
 
   /**
@@ -333,7 +354,8 @@ export class ExtensionBridge {
     });
   }
 
-  private handleConnection(socket: WebSocket): void {
+  /** `first`: a hello the relay already read from this socket (relay bridges only). */
+  private handleConnection(socket: WebSocket, first?: Record<string, unknown>): void {
     /** hello: waiting for hello; checking: hub reading its pin; auth: hub waiting for `auth`; open: authenticated. */
     let state: "hello" | "checking" | "auth" | "open" = "hello";
     let expectedProof = "";
@@ -352,15 +374,7 @@ export class ExtensionBridge {
       this.accept(socket, hello, welcome, pin);
     };
 
-    socket.on("message", (data) => {
-      let frame: Record<string, unknown>;
-      try {
-        frame = JSON.parse(rawToString(data));
-      } catch {
-        if (state === "auth") reject(CLOSE_PIN_MISMATCH, "invalid auth");
-        else if (state !== "open") reject(CLOSE_BAD_HELLO, "invalid hello");
-        return;
-      }
+    const onFrame = (frame: Record<string, unknown>): void => {
       switch (state) {
         case "open":
           if (socket === this.active) this.handleFrame(socket, frame);
@@ -386,6 +400,10 @@ export class ExtensionBridge {
       }
       hello = v2HelloFeatures(frame);
       const auth = this.auth;
+      if (auth.kind === "relay") {
+        open("send");
+        return;
+      }
       if (auth.kind === "token") {
         if (typeof frame.token !== "string" || !safeEqual(frame.token, auth.token)) {
           reject(CLOSE_BAD_HELLO, "bad hello");
@@ -430,6 +448,18 @@ export class ExtensionBridge {
         log.error(`extension: hub pin store failed: ${(err as Error).message}`);
         reject(CLOSE_INTERNAL, "pin store unavailable");
       });
+    };
+
+    socket.on("message", (data) => {
+      let frame: Record<string, unknown>;
+      try {
+        frame = JSON.parse(rawToString(data));
+      } catch {
+        if (state === "auth") reject(CLOSE_PIN_MISMATCH, "invalid auth");
+        else if (state !== "open") reject(CLOSE_BAD_HELLO, "invalid hello");
+        return;
+      }
+      onFrame(frame);
     });
 
     socket.on("close", () => {
@@ -442,6 +472,7 @@ export class ExtensionBridge {
       this.failPending(socket, "extension disconnected");
     });
     socket.on("error", () => {});
+    if (first) onFrame(first);
   }
 
   private withPinLock(task: () => Promise<void>): Promise<void> {
