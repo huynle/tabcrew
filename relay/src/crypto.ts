@@ -9,6 +9,11 @@ export function randomToken(bytes = 32): string {
   return randomBytes(bytes).toString("base64url");
 }
 
+/** HMAC-SHA256 as base64url (e.g. the account page's CSRF token, bound to the session cookie). */
+export function hmac(key: Buffer, value: string): string {
+  return createHmac("sha256", key).update(value).digest("base64url");
+}
+
 export function sha256(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex");
 }
@@ -28,7 +33,8 @@ export function pkceMatches(verifier: string, challenge: string): boolean {
 export interface AccessClaims {
   /** User id. */
   readonly sub: string;
-  readonly aud: "mcp" | "ext";
+  /** mcp: MCP clients; ext: a browser extension; web: the account page cookie. */
+  readonly aud: "mcp" | "ext" | "web";
   /** OAuth client id. */
   readonly cid: string;
   /** Browser id (extension tokens only). */
@@ -45,7 +51,7 @@ export function signAccess(claims: AccessClaims, key: Buffer): string {
 }
 
 /** The claims of a valid, unexpired token for `aud`, else null. */
-export function verifyAccess(token: string, aud: "mcp" | "ext", key: Buffer, nowMs: number): AccessClaims | null {
+export function verifyAccess(token: string, aud: AccessClaims["aud"], key: Buffer, nowMs: number): AccessClaims | null {
   const parts = token.split(".");
   if (parts.length !== 3 || parts[0] !== "tca") return null;
   const body = `${parts[0]}.${parts[1]}`;

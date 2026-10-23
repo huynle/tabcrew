@@ -6,13 +6,15 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { daemonVersion } from "@tabcrew/daemon/dist/daemon.js";
 import { log } from "@tabcrew/daemon/dist/log.js";
-import { createProtocolServer } from "@tabcrew/daemon/dist/mcp/protocol.js";
 import { isTabcrewExtensionOrigin, tabcrewExtensionOrigins } from "@tabcrew/shared/product";
 import { V2_CLOSE_BAD_HELLO } from "@tabcrew/shared/v2";
 import { WebSocketServer, type WebSocket } from "ws";
+import { AccountPages } from "./account.js";
 import type { Provider } from "./auth/providers.js";
 import { AuthServer } from "./auth/server.js";
 import { bearer, readBody, sendJson } from "./http.js";
+import { clientIp, DEFAULT_LIMITS, TokenBucket, type Limits } from "./limits.js";
+import { createRelayProtocolServer } from "./mcpServer.js";
 import type { Store } from "./store/types.js";
 import { TenantManager } from "./tenants.js";
 
@@ -33,6 +35,10 @@ export interface RelayOptions {
   readonly helloTimeoutMs?: number;
   readonly accessTtlSec?: number;
   readonly now?: () => number;
+  /** Per-user and per-IP limits (defaults: DEFAULT_LIMITS). */
+  readonly limits?: Partial<Limits>;
+  /** Behind a reverse proxy: take the client IP from X-Forwarded-For (its right-most entry). */
+  readonly trustProxy?: boolean;
 }
 
 export interface RunningRelay {
@@ -49,7 +55,11 @@ const MAX_EXT_FRAME = 32 * 1024 * 1024;
 interface McpSession {
   readonly transport: StreamableHTTPServerTransport;
   readonly userId: string;
+  readonly clientId: string;
 }
+
+/** Paths that start or finish a sign-in: rate-limited per client IP. */
+const AUTH_PATHS = /^\/(register|authorize|token|auth\/[a-z]+(\/callback)?|account\/login)$/;
 
 export async function startRelay(o: RelayOptions): Promise<RunningRelay> {
   if (o.signingKey.length < 32) throw new Error("signing key must be at least 32 bytes");
@@ -57,6 +67,12 @@ export async function startRelay(o: RelayOptions): Promise<RunningRelay> {
   const version = daemonVersion();
   const now = o.now ?? Date.now;
   const extensionOrigins = o.extensionOrigins ?? tabcrewExtensionOrigins();
+  const limits: Limits = { ...DEFAULT_LIMITS, ...o.limits };
+  const authBucket = new TokenBucket({ capacity: limits.authPerMinute, refillPerSec: limits.authPerMinute / 60, now });
+  const mcpBucket = new TokenBucket({ capacity: limits.mcpBurst, refillPerSec: limits.mcpPerSecond, now });
+  const accessTtlSec = o.accessTtlSec ?? 15 * 60;
+  /** `${userId}|${clientId}` -> until (ms): revoked clients whose access tokens may not have expired yet. */
+  const revokedClients = new Map<string, number>();
   const tenants = new TenantManager({
     version,
     offlineWaitMs: o.offlineWaitMs,
@@ -67,6 +83,7 @@ export async function startRelay(o: RelayOptions): Promise<RunningRelay> {
   const mcpSessions = new Map<string, McpSession>();
   let shuttingDown = false;
   let auth: AuthServer | null = null;
+  let account: AccountPages | null = null;
 
   const http = createServer((req, res) => {
     handle(req, res).catch((err) => {
@@ -79,6 +96,10 @@ export async function startRelay(o: RelayOptions): Promise<RunningRelay> {
     const url = new URL(req.url ?? "/", "http://relay");
     if (!auth) {
       sendJson(res, 503, { error: "starting" });
+      return;
+    }
+    if (AUTH_PATHS.test(url.pathname) && !authBucket.take(clientIp(req, o.trustProxy === true))) {
+      sendJson(res, 429, { error: "too_many_requests", error_description: "too many sign-in requests; wait a minute" }, { "retry-after": "60" });
       return;
     }
     if (url.pathname === "/health" && req.method === "GET") {
@@ -106,14 +127,21 @@ export async function startRelay(o: RelayOptions): Promise<RunningRelay> {
         }
       }
     }
+    if (await account!.handle(req, res, url)) return;
     if (await auth!.handle(req, res, url)) return;
     sendJson(res, 404, { error: "not_found" });
   }
 
   async function handleMcp(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    const claims = auth!.verify(bearer(req), "mcp");
+    const verified = auth!.verify(bearer(req), "mcp");
+    const revokedUntil = verified ? revokedClients.get(`${verified.sub}|${verified.cid}`) : undefined;
+    const claims = verified && !(revokedUntil !== undefined && revokedUntil > now()) ? verified : null;
     if (!claims) {
       sendJson(res, 401, { error: "invalid_token" }, { "www-authenticate": `Bearer resource_metadata="${auth!.resourceMetadataUrl}"` });
+      return;
+    }
+    if (!mcpBucket.take(claims.sub)) {
+      sendJson(res, 429, { jsonrpc: "2.0", error: { code: -32000, message: "too many requests; slow down" }, id: null }, { "retry-after": "1" });
       return;
     }
     const sessionId = req.headers["mcp-session-id"];
@@ -131,7 +159,6 @@ export async function startRelay(o: RelayOptions): Promise<RunningRelay> {
         return;
       }
       if (existing) {
-        tenants.for(claims.sub);
         await existing.transport.handleRequest(req, res, body);
         return;
       }
@@ -140,17 +167,24 @@ export async function startRelay(o: RelayOptions): Promise<RunningRelay> {
         sendJson(res, 400, { jsonrpc: "2.0", error: { code: -32000, message: "no valid MCP session id" }, id: null });
         return;
       }
-      const tenant = tenants.for(claims.sub);
       const transport: StreamableHTTPServerTransport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),
         onsessioninitialized: (id) => {
-          mcpSessions.set(id, { transport, userId: claims.sub });
+          mcpSessions.set(id, { transport, userId: claims.sub, clientId: claims.cid });
         },
       });
       transport.onclose = () => {
         if (transport.sessionId) mcpSessions.delete(transport.sessionId);
       };
-      await createProtocolServer(tenant.core.ctx, version, () => shuttingDown).connect(transport);
+      await createRelayProtocolServer({
+        userId: claims.sub,
+        tenants,
+        store: o.store,
+        version,
+        maxSessions: limits.maxSessions,
+        isShuttingDown: () => shuttingDown,
+        now,
+      }).connect(transport);
       await transport.handleRequest(req, res, body);
       return;
     }
@@ -193,13 +227,26 @@ export async function startRelay(o: RelayOptions): Promise<RunningRelay> {
       }
       const token = typeof hello?.token === "string" ? hello.token : null;
       const claims = auth!.verify(token, "ext");
-      if (hello?.type !== "hello" || !claims) {
+      if (hello?.type !== "hello" || !claims?.bid) {
         ws.close(V2_CLOSE_BAD_HELLO, "bad hello");
         return;
       }
       delete hello.token;
-      log.info("relay: browser connected");
-      tenants.for(claims.sub).core.bridge.attach(ws, hello);
+      // A revoked browser's access token may not have expired yet: check the browser itself.
+      void o.store
+        .getBrowser(claims.bid)
+        .then((browser) => {
+          if (!browser || browser.userId !== claims.sub || browser.revoked) {
+            ws.close(V2_CLOSE_BAD_HELLO, "sign-in revoked");
+            return;
+          }
+          log.info("relay: browser connected");
+          tenants.forBrowser(claims.sub, browser.id, browser.name).core.bridge.attach(ws, hello);
+        })
+        .catch((err) => {
+          log.error(`relay: browser lookup failed: ${(err as Error).message}`);
+          ws.close(1011, "internal error");
+        });
     });
   }
 
@@ -216,7 +263,25 @@ export async function startRelay(o: RelayOptions): Promise<RunningRelay> {
     providers: o.providers,
     extensionOrigins,
     now,
-    accessTtlSec: o.accessTtlSec,
+    accessTtlSec,
+    maxBrowsers: limits.maxBrowsers,
+  });
+  account = new AccountPages({
+    publicUrl,
+    store: o.store,
+    auth,
+    providers: o.providers,
+    tenants,
+    signingKey: o.signingKey,
+    revokeClient(userId, clientId) {
+      for (const [key, until] of revokedClients) if (until <= now()) revokedClients.delete(key);
+      revokedClients.set(`${userId}|${clientId}`, now() + accessTtlSec * 1000);
+      for (const [id, s] of mcpSessions) {
+        if (s.userId !== userId || s.clientId !== clientId) continue;
+        mcpSessions.delete(id);
+        void s.transport.close();
+      }
+    },
   });
   log.info(`tabcrew-relay ${version} listening on ${port} as ${publicUrl}`);
 

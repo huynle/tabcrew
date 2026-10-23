@@ -1,5 +1,5 @@
 import { newId } from "../crypto.js";
-import type { Browser, IdentityInput, OAuthClient, RefreshRecord, Store, Taken, User } from "./types.js";
+import type { Browser, Grant, IdentityInput, OAuthClient, RefreshRecord, Store, Taken, User } from "./types.js";
 
 /** In-process store for tests and `RELAY_STORE=memory` development runs. */
 export class MemoryStore implements Store {
@@ -73,10 +73,52 @@ export class MemoryStore implements Store {
   }
 
   async upsertBrowser(userId: string, name: string): Promise<Browser> {
-    for (const b of this.browsers.values()) if (b.userId === userId && b.name === name) return b;
-    const b: Browser = { id: newId("b"), userId, name };
+    for (const b of this.browsers.values()) {
+      if (b.userId === userId && b.name === name) {
+        const live = { ...b, revoked: false };
+        this.browsers.set(b.id, live);
+        return live;
+      }
+    }
+    const b: Browser = { id: newId("b"), userId, name, revoked: false };
     this.browsers.set(b.id, b);
     return b;
+  }
+
+  async getBrowser(id: string): Promise<Browser | null> {
+    return this.browsers.get(id) ?? null;
+  }
+
+  async listBrowsers(userId: string): Promise<Browser[]> {
+    return [...this.browsers.values()].filter((b) => b.userId === userId && !b.revoked);
+  }
+
+  async revokeBrowser(userId: string, browserId: string): Promise<boolean> {
+    const b = this.browsers.get(browserId);
+    if (!b || b.userId !== userId) return false;
+    this.browsers.set(browserId, { ...b, revoked: true });
+    return true;
+  }
+
+  async listGrants(userId: string): Promise<Grant[]> {
+    const now = Date.now();
+    const byFamily = new Map<string, Grant>();
+    for (const r of this.refresh.values()) {
+      if (r.userId !== userId || r.used || r.revoked || r.expiresAt < now) continue;
+      byFamily.set(r.family, { family: r.family, clientId: r.clientId, audience: r.audience, browserId: r.browserId });
+    }
+    return [...byFamily.values()];
+  }
+
+  async revokeGrants(userId: string, which: { clientId: string } | { browserId: string }): Promise<number> {
+    let n = 0;
+    for (const [hash, r] of this.refresh) {
+      if (r.userId !== userId || r.revoked) continue;
+      if ("clientId" in which ? r.clientId !== which.clientId : r.browserId !== which.browserId) continue;
+      this.refresh.set(hash, { ...r, revoked: true });
+      n++;
+    }
+    return n;
   }
 }
 

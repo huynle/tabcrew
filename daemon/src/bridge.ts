@@ -262,6 +262,16 @@ export class ExtensionBridge {
     this.wss = null;
   }
 
+  /** Drop the connected extension (e.g. its sign-in was revoked) with `code`; pending requests fail. */
+  disconnect(code = 1000, reason = ""): void {
+    const socket = this.active;
+    if (!socket) return;
+    this.active = null;
+    this.stopPing();
+    this.failPending(socket, "extension disconnected");
+    socket.close(code, reason);
+  }
+
   /**
    * Relay bridges: take over an extension socket the relay has already authenticated, with the
    * hello frame it read (protocol checked here; a bad hello closes it with 4401). A newer socket

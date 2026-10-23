@@ -18,19 +18,26 @@ export interface AuthOptions {
   readonly now?: () => number;
   readonly accessTtlSec?: number;
   readonly refreshTtlSec?: number;
+  /** Browsers a user may have signed in (new names beyond it are refused at sign-in). */
+  readonly maxBrowsers?: number;
 }
+
+/** The account page's session cookie. */
+export const ACCOUNT_COOKIE = "tabcrew_account";
+const WEB_TTL_SEC = 12 * 3600;
 
 const TXN_TTL_MS = 10 * 60_000;
 const CODE_TTL_MS = 60_000;
 const MAX_REDIRECT_URIS = 10;
 
-/** Pending sign-in, between /authorize and the provider callback. */
+/** Pending sign-in, between /authorize (or /account/login) and the provider callback. */
 interface AuthTxn {
   readonly clientId: string;
   readonly redirectUri: string;
   readonly state: string | null;
   readonly challenge: string;
-  readonly audience: Audience;
+  /** "web": signing in to the account page (a cookie instead of a code). */
+  readonly audience: Audience | "web";
   readonly browserName: string | null;
   readonly provider: string | null;
 }
@@ -119,9 +126,33 @@ export class AuthServer {
     return `${this.o.publicUrl}/.well-known/oauth-protected-resource/mcp`;
   }
 
-  /** Verified claims of a bearer access token for `aud`, else null. */
-  verify(token: string | null, aud: Audience): AccessClaims | null {
+  /** Verified claims of a bearer access token (or account cookie) for `aud`, else null. */
+  verify(token: string | null, aud: Audience | "web"): AccessClaims | null {
     return token ? verifyAccess(token, aud, this.o.signingKey, this.now()) : null;
+  }
+
+  /** Account page sign-in: straight to the provider, back to /account with a session cookie. */
+  async startWebLogin(res: ServerResponse, providerId: string): Promise<void> {
+    const provider = this.o.providers.find((p) => p.id === providerId);
+    if (!provider) throw new OAuthError("invalid_request", "Unknown sign-in provider.", 404);
+    const txn: AuthTxn = {
+      clientId: "account",
+      redirectUri: `${this.o.publicUrl}/account`,
+      state: null,
+      challenge: "",
+      audience: "web",
+      browserName: null,
+      provider: provider.id,
+    };
+    const state = randomToken();
+    await this.o.store.putTxn(state, txn, this.now() + TXN_TTL_MS);
+    res.writeHead(302, { location: provider.authorizeUrl({ state, redirectUri: this.callbackUrl(provider.id) }), "cache-control": "no-store" });
+    res.end();
+  }
+
+  /** Set-Cookie value that ends the account session. */
+  get clearCookie(): string {
+    return `${ACCOUNT_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${this.o.publicUrl.startsWith("https:") ? "; Secure" : ""}`;
   }
 
   /** Handle an auth route; false when `pathname` is not one. */
@@ -296,14 +327,39 @@ export class AuthServer {
     }
     const user = await this.o.store.upsertIdentity({ provider: provider.id, ...identity });
     if (user.disabled) throw new OAuthError("access_denied", "This account is disabled.", 403);
-    const browserId = txn.audience === "ext" ? (await this.o.store.upsertBrowser(user.id, txn.browserName ?? "browser")).id : null;
+    if (txn.audience === "web") {
+      const iat = Math.floor(this.now() / 1000);
+      const value = signAccess({ sub: user.id, aud: "web", cid: "account", iat, exp: iat + WEB_TTL_SEC }, this.o.signingKey);
+      const secure = this.o.publicUrl.startsWith("https:") ? "; Secure" : "";
+      res.writeHead(303, {
+        location: "/account",
+        "set-cookie": `${ACCOUNT_COOKIE}=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${WEB_TTL_SEC}${secure}`,
+        "cache-control": "no-store",
+      });
+      res.end();
+      return;
+    }
+    let browserId: string | null = null;
+    if (txn.audience === "ext") {
+      const name = txn.browserName ?? "browser";
+      const existing = await this.o.store.listBrowsers(user.id);
+      const max = this.o.maxBrowsers ?? Infinity;
+      if (!existing.some((b) => b.name === name) && existing.length >= max) {
+        throw new OAuthError(
+          "access_denied",
+          `This account already has ${existing.length} browsers signed in (the most allowed). Revoke one at ${this.o.publicUrl}/account, then sign in again.`,
+          403,
+        );
+      }
+      browserId = (await this.o.store.upsertBrowser(user.id, name)).id;
+    }
     const authCode = randomToken();
     const data: CodeData = {
       userId: user.id,
       clientId: txn.clientId,
       redirectUri: txn.redirectUri,
       challenge: txn.challenge,
-      audience: txn.audience,
+      audience: txn.audience as Audience,
       browserId,
     };
     await this.o.store.putCode(sha256(authCode), data, this.now() + CODE_TTL_MS);

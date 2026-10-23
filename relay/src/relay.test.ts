@@ -57,11 +57,10 @@ describe("Online relay end to end", () => {
     const bob = await agent(BOB);
     const aliceSession = (await call(alice.client, "session_open", {})).value.session;
 
-    // Bob's own session has no browser: offline, and nothing reaches Alice's extension.
-    const bobSession = (await call(bob.client, "session_open", {})).value.session;
-    const bobTab = await call(bob.client, "tab_create", { session: bobSession });
-    expect(bobTab.isError).toBe(true);
-    expect(bobTab.value.code).toBe("extension_offline");
+    // Bob has no browser: he cannot open a session, and nothing reaches Alice's extension.
+    const bobOpen = await call(bob.client, "session_open", {});
+    expect(bobOpen.isError).toBe(true);
+    expect(bobOpen.value.code).toBe("extension_offline");
 
     // Alice's handle is unknown to Bob, the same error as a made-up handle.
     const stolen = await call(bob.client, "tab_list", { session: aliceSession });

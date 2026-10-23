@@ -62,6 +62,44 @@ function contract(name: string, make: () => Store, enabled = true) {
       expect(await store.markRefreshUsed(sibling.hash)).toBe(false);
     });
 
+    it("browsers: list, revoke (owner only), re-sign-in clears the revocation", async () => {
+      const user = await store.upsertIdentity({ provider: "github", subject: id() });
+      const other = await store.upsertIdentity({ provider: "github", subject: id() });
+      const a = await store.upsertBrowser(user.id, "home");
+      const b = await store.upsertBrowser(user.id, "work");
+      expect((await store.listBrowsers(user.id)).map((x) => x.name).sort()).toEqual(["home", "work"]);
+      expect(await store.revokeBrowser(other.id, a.id)).toBe(false);
+      expect(await store.revokeBrowser(user.id, a.id)).toBe(true);
+      expect((await store.listBrowsers(user.id)).map((x) => x.id)).toEqual([b.id]);
+      expect((await store.getBrowser(a.id))?.revoked).toBe(true);
+      expect((await store.upsertBrowser(user.id, "home")).id).toBe(a.id);
+      expect((await store.getBrowser(a.id))?.revoked).toBe(false);
+      expect(await store.getBrowser(id())).toBeNull();
+    });
+
+    it("grants: one per live family, revocable by client or browser", async () => {
+      const user = await store.upsertIdentity({ provider: "github", subject: id() });
+      const base = { userId: user.id, expiresAt: Date.now() + 1e6 };
+      const f1 = id();
+      await store.putRefresh({ ...base, hash: id(), family: f1, clientId: "agent-1", audience: "mcp", browserId: null, used: true });
+      await store.putRefresh({ ...base, hash: id(), family: f1, clientId: "agent-1", audience: "mcp", browserId: null });
+      const f2 = id();
+      const ext = { ...base, hash: id(), family: f2, clientId: "tabcrew-extension", audience: "ext" as const, browserId: "b_x" };
+      await store.putRefresh(ext);
+      await store.putRefresh({ ...base, hash: id(), family: id(), clientId: "old", audience: "mcp", browserId: null, expiresAt: Date.now() - 1 });
+      const grants = await store.listGrants(user.id);
+      expect(grants.map((g) => [g.family, g.clientId, g.audience, g.browserId]).sort()).toEqual(
+        [
+          [f1, "agent-1", "mcp", null],
+          [f2, "tabcrew-extension", "ext", "b_x"],
+        ].sort(),
+      );
+      expect(await store.revokeGrants(user.id, { browserId: "b_x" })).toBe(1);
+      expect((await store.getRefresh(ext.hash))?.revoked).toBe(true);
+      expect(await store.revokeGrants(user.id, { clientId: "agent-1" })).toBe(2);
+      expect(await store.listGrants(user.id)).toEqual([]);
+    });
+
     it("browsers are unique per user and name", async () => {
       const user = await store.upsertIdentity({ provider: "github", subject: id() });
       const other = await store.upsertIdentity({ provider: "github", subject: id() });

@@ -94,6 +94,15 @@ describe("ExtensionBridge relay auth (attach)", () => {
     expect(bridge.connected).toBe(false);
   });
 
+  it("disconnect() closes the attached socket with the given code", async () => {
+    const { bridge, port } = await setup();
+    const ext = await FakeExtension.connect(port, "t");
+    await until(() => bridge.connected);
+    bridge.disconnect(4401, "revoked");
+    expect((await ext.closed).code).toBe(4401);
+    expect(bridge.connected).toBe(false);
+  });
+
   it("has no server of its own", async () => {
     const bridge = new ExtensionBridge({ auth: { kind: "relay" }, sessions: () => [] });
     await expect(bridge.start()).rejects.toThrow(/attach/);

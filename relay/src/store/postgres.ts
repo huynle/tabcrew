@@ -1,6 +1,6 @@
 import pg from "pg";
 import { newId } from "../crypto.js";
-import type { Browser, IdentityInput, OAuthClient, RefreshRecord, Store, Taken, User } from "./types.js";
+import type { Browser, Grant, IdentityInput, OAuthClient, RefreshRecord, Store, Taken, User } from "./types.js";
 
 /** Idempotent schema; applied by `init()`. Times are epoch milliseconds (bigint). */
 export const SCHEMA = `
@@ -45,9 +45,13 @@ CREATE TABLE IF NOT EXISTS browsers (
   created_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE (user_id, name)
 );
+ALTER TABLE browsers ADD COLUMN IF NOT EXISTS revoked boolean NOT NULL DEFAULT false;
+CREATE INDEX IF NOT EXISTS refresh_tokens_user ON refresh_tokens (user_id);
 `;
 
 type Row = Record<string, any>;
+
+const toBrowser = (r: Row): Browser => ({ id: r.id, userId: r.user_id, name: r.name, revoked: r.revoked === true });
 
 const toUser = (r: Row): User => ({ id: r.id, email: r.email, name: r.name, disabled: r.disabled });
 
@@ -196,10 +200,40 @@ export class PostgresStore implements Store {
     const r = (
       await this.pool.query(
         `INSERT INTO browsers (id, user_id, name) VALUES ($1, $2, $3)
-         ON CONFLICT (user_id, name) DO UPDATE SET name = EXCLUDED.name RETURNING *`,
+         ON CONFLICT (user_id, name) DO UPDATE SET revoked = false RETURNING *`,
         [newId("b"), userId, name],
       )
     ).rows[0];
-    return { id: r.id, userId: r.user_id, name: r.name };
+    return toBrowser(r);
+  }
+
+  async getBrowser(id: string): Promise<Browser | null> {
+    const r = (await this.pool.query("SELECT * FROM browsers WHERE id = $1", [id])).rows[0];
+    return r ? toBrowser(r) : null;
+  }
+
+  async listBrowsers(userId: string): Promise<Browser[]> {
+    const r = await this.pool.query("SELECT * FROM browsers WHERE user_id = $1 AND revoked = false ORDER BY created_at", [userId]);
+    return r.rows.map(toBrowser);
+  }
+
+  async revokeBrowser(userId: string, browserId: string): Promise<boolean> {
+    const r = await this.pool.query("UPDATE browsers SET revoked = true WHERE id = $1 AND user_id = $2", [browserId, userId]);
+    return r.rowCount === 1;
+  }
+
+  async listGrants(userId: string): Promise<Grant[]> {
+    const r = await this.pool.query(
+      `SELECT DISTINCT ON (family) family, client_id, audience, browser_id FROM refresh_tokens
+       WHERE user_id = $1 AND used = false AND revoked = false AND expires_at >= $2`,
+      [userId, Date.now()],
+    );
+    return r.rows.map((x: Row) => ({ family: x.family, clientId: x.client_id, audience: x.audience, browserId: x.browser_id }));
+  }
+
+  async revokeGrants(userId: string, which: { clientId: string } | { browserId: string }): Promise<number> {
+    const [column, value] = "clientId" in which ? ["client_id", which.clientId] : ["browser_id", which.browserId];
+    const r = await this.pool.query(`UPDATE refresh_tokens SET revoked = true WHERE user_id = $1 AND ${column} = $2 AND revoked = false`, [userId, value]);
+    return r.rowCount ?? 0;
   }
 }

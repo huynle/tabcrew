@@ -26,6 +26,16 @@ export interface Browser {
   readonly id: string;
   readonly userId: string;
   readonly name: string;
+  /** Revoked on the account page; cleared when that browser signs in again. */
+  readonly revoked?: boolean;
+}
+
+/** One live sign-in (refresh token family) as the account page lists it. */
+export interface Grant {
+  readonly family: string;
+  readonly clientId: string;
+  readonly audience: Audience;
+  readonly browserId: string | null;
 }
 
 export interface RefreshRecord {
@@ -72,5 +82,16 @@ export interface Store {
   markRefreshUsed(hash: string): Promise<boolean>;
   revokeFamily(family: string): Promise<void>;
 
+  /** Create or find the user's browser by name; clears a revocation. */
   upsertBrowser(userId: string, name: string): Promise<Browser>;
+  getBrowser(id: string): Promise<Browser | null>;
+  /** The user's browsers that are not revoked. */
+  listBrowsers(userId: string): Promise<Browser[]>;
+  /** Revoke a browser of this user; false when it is not the user's. */
+  revokeBrowser(userId: string, browserId: string): Promise<boolean>;
+
+  /** Live sign-ins: families with an unused, unrevoked, unexpired token. */
+  listGrants(userId: string): Promise<Grant[]>;
+  /** Revoke the user's tokens of a client or a browser; the number of tokens revoked. */
+  revokeGrants(userId: string, which: { readonly clientId: string } | { readonly browserId: string }): Promise<number>;
 }

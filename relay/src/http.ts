@@ -7,14 +7,15 @@ export function sendJson(res: ServerResponse, status: number, body: unknown, hea
 }
 
 /** HTML pages may never be framed (the sign-in page must not be clickjacked). */
-export function sendHtml(res: ServerResponse, status: number, html: string): void {
+export function sendHtml(res: ServerResponse, status: number, html: string, opts: { readonly forms?: boolean; readonly headers?: Record<string, string> } = {}): void {
   if (res.headersSent) return;
   res.writeHead(status, {
     "content-type": "text/html; charset=utf-8",
     "cache-control": "no-store",
     "x-frame-options": "DENY",
-    "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; form-action 'none'",
+    "content-security-policy": `default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; form-action ${opts.forms ? "'self'" : "'none'"}`,
     "referrer-policy": "no-referrer",
+    ...opts.headers,
   });
   res.end(html);
 }
