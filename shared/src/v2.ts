@@ -133,7 +133,10 @@ export type V2ActionKind = "click" | "fill" | "select" | "scroll" | "wait";
  * (e.g. "fill" + "Open <label>" click, or one "select" per selectable option).
  */
 export interface V2Action {
-  /** "e1".."e250" for element actions; "scroll_down" | "scroll_up" | "wait" for controls. */
+  /**
+   * "e1".."e250" for element actions; "scroll_down" | "scroll_up" (page) | "scroll_down_<n>" |
+   * "scroll_up_<n>" (scroll area n, 1..5: a dialog or panel; `node` is the area) | "wait" for controls.
+   */
   readonly id: string;
   readonly kind: V2ActionKind;
   readonly label: string;

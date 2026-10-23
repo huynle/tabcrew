@@ -84,6 +84,11 @@ isolation:
 guards:
     node daemon/scripts/guards.mjs
 
+# Page-script check in a throwaway headless Chrome (no daemon, no extension): scroll areas,
+# modals, clip-aware elements and scroll-into-view on extension/test-fixtures/modal.html.
+page-check:
+    cd extension && npx tsx scripts/page-check.ts
+
 # Live check: concurrent calls across sessions and tabs.
 concurrency:
     node daemon/scripts/concurrency.mjs
