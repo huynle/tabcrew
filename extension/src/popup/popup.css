@@ -211,3 +211,7 @@ select.wide {
 .note.guide {
   min-height: 0;
 }
+#provider-group .invalid {
+  outline: 2px solid #b42318;
+  outline-offset: 1px;
+}

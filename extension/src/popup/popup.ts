@@ -12,7 +12,7 @@ import {
   type PopupState,
   type PopupStopResult,
 } from "../config.js";
-import { listModels, probeProvider, type ProbeDeps } from "../model/probe.js";
+import { listModels, probeProvider, type ConnectionInput, type ProbeDeps } from "../model/probe.js";
 import {
   PROVIDER_PRESETS,
   clearProviderSettings,
@@ -24,6 +24,7 @@ import {
   saveProviderSettings,
   type ProviderSettings,
 } from "../model/settings.js";
+import { DRAFT_RESTORED, clearProviderDraft, draftDiffers, loadProviderDraft, saveProviderDraft } from "./draft.js";
 import { bindPlacementRadios } from "./placement.js";
 import {
   CUSTOM_MODEL,
@@ -268,7 +269,9 @@ $("trust-hub").addEventListener("click", async () => {
 // Model provider (hub mode): stored in chrome.storage.local (v2:provider) and used by the service
 // worker's model_call proxy. The key input is write-only. Load models, Test and Save ask for host
 // access to the provider's origin synchronously in the click (a user gesture), before anything is
-// awaited; opening the popup only lists the models when access was already granted.
+// awaited; opening the popup only lists the models when access was already granted. Chrome closes
+// the popup while it shows that prompt, so every edit is kept as a draft in chrome.storage.session
+// (see draft.ts) and put back, with the models listed, when the popup reopens.
 // ---------------------------------------------------------------------------
 
 let savedProvider: ProviderSettings | null = null;
@@ -288,11 +291,9 @@ const MODEL_SLOTS = Object.keys(MODEL_SELECTS) as ModelSlot[];
 const modelSelect = (slot: ModelSlot) => $<HTMLSelectElement>(MODEL_SELECTS[slot]);
 const customInput = (slot: ModelSlot) => $<HTMLInputElement>(`${MODEL_SELECTS[slot]}-custom`);
 
-const PROVIDER_INPUTS: Record<Exclude<ProviderField, "headers">, string> = {
+const PROVIDER_INPUTS: Record<"base_url" | "api_key", string> = {
   base_url: "provider-base-url",
   api_key: "provider-key",
-  decision_model: "provider-decision-model",
-  text_model: "provider-text-model",
 };
 
 for (const preset of PROVIDER_PRESETS) {
@@ -306,13 +307,22 @@ async function loadProvider(openIfMissing: boolean): Promise<void> {
   if (providerLoaded) return;
   providerLoaded = true;
   savedProvider = await loadProviderSettings().catch(() => null);
-  fillProviderForm(providerFormFrom(savedProvider));
-  if (openIfMissing && !savedProvider) $<HTMLDetailsElement>("advanced").open = true;
-  if (savedProvider) void autoLoadModels(savedProvider);
+  const draft = await loadProviderDraft().catch(() => null);
+  const restore = draft !== null && draftDiffers(draft, savedProvider);
+  if (draft !== null && !restore) void clearProviderDraft().catch(() => undefined);
+  fillProviderForm(restore ? draft : providerFormFrom(savedProvider));
+  note("provider-draft-note", restore ? DRAFT_RESTORED : "", restore ? "warn" : "");
+  if (restore || (openIfMissing && !savedProvider)) $<HTMLDetailsElement>("advanced").open = true;
+  if (restore) {
+    const input = probeInput(draft, savedProvider);
+    if (input.ok) void autoLoadModels(input.input);
+  } else if (savedProvider) {
+    void autoLoadModels(savedProvider);
+  }
 }
 
-/** On open: list the saved provider's models if access was already granted (never prompts). */
-async function autoLoadModels(settings: ProviderSettings): Promise<void> {
+/** On open: list the (saved or restored) provider's models if access was already granted (never prompts). */
+async function autoLoadModels(settings: ConnectionInput): Promise<void> {
   const base = normalizeBaseUrl(settings.base_url);
   if (!base.ok) return;
   const granted = await chrome.permissions.contains({ origins: [originPattern(base.origin)] }).catch(() => false);
@@ -408,14 +418,18 @@ function headerRow(row: HeaderRow): HTMLDivElement {
   value.value = row.value;
   value.spellcheck = false;
   value.autocomplete = "off";
-  div.append(name, value, button("×", () => div.remove(), { title: "Remove this header", className: "danger" }));
+  const remove = () => {
+    div.remove();
+    persistDraft();
+  };
+  div.append(name, value, button("×", remove, { title: "Remove this header", className: "danger" }));
   return div;
 }
 
 function fillProviderForm(form: ProviderForm): void {
   $<HTMLSelectElement>("provider-preset").value = form.preset;
   $<HTMLInputElement>("provider-base-url").value = form.base_url;
-  $<HTMLInputElement>("provider-key").value = "";
+  $<HTMLInputElement>("provider-key").value = form.api_key;
   $("provider-headers").replaceChildren(...form.headers.map(headerRow));
   syncModelsBase();
   renderModelPickers(form);
@@ -435,7 +449,7 @@ function readProviderForm(): ProviderForm {
     value: row.querySelector<HTMLInputElement>(".header-value")?.value ?? "",
   }));
   return {
-    preset: presetFor(value("provider-base-url")),
+    preset: PROVIDER_PRESETS.find((p) => p.id === value("provider-preset"))?.id ?? presetFor(value("provider-base-url")),
     base_url: value("provider-base-url"),
     api_key: value("provider-key"),
     headers,
@@ -443,10 +457,42 @@ function readProviderForm(): ProviderForm {
   };
 }
 
-function providerProblem(field: ProviderField, error: string): void {
-  note("provider-note", error, "error");
-  if (field !== "headers") $<HTMLInputElement>(PROVIDER_INPUTS[field]).focus();
+/** The control to mark for a form problem: the custom input when a dropdown is on Custom…. */
+function fieldControl(field: ProviderField): HTMLElement {
+  if (field === "headers") return $("provider-headers");
+  if (field === "base_url" || field === "api_key") return $(PROVIDER_INPUTS[field]);
+  return customInput(field).hidden ? modelSelect(field) : customInput(field);
 }
+
+/** Show a form problem in `noteId` (next to the button that was clicked) and mark + focus the field. */
+function providerProblem(noteId: string, field: ProviderField, error: string): void {
+  note(noteId, error, "error");
+  const control = fieldControl(field);
+  control.classList.add("invalid");
+  control.setAttribute("aria-invalid", "true");
+  const focusable = field === "headers" ? control.querySelector<HTMLInputElement>("input") : control;
+  (focusable ?? $("add-header")).focus();
+}
+
+function clearProblems(): void {
+  document.querySelectorAll<HTMLElement>("#provider-group .invalid").forEach((el) => {
+    el.classList.remove("invalid");
+    el.removeAttribute("aria-invalid");
+  });
+}
+
+/** Keep the form as a draft (started in this turn, so it survives the popup closing next). */
+function persistDraft(form: ProviderForm = readProviderForm()): void {
+  void saveProviderDraft(form).catch(() => undefined);
+}
+
+// Every edit in the provider group (typing, dropdowns, preset) is kept; programmatic fills aren't
+// events, so loading or restoring the form never writes a draft by itself.
+$("provider-group").addEventListener("input", () => {
+  clearProblems();
+  persistDraft();
+});
+$("provider-group").addEventListener("change", () => persistDraft());
 
 $<HTMLSelectElement>("provider-preset").addEventListener("change", (e) => {
   const preset = PROVIDER_PRESETS.find((p) => p.id === (e.target as HTMLSelectElement).value);
@@ -464,9 +510,13 @@ $<HTMLInputElement>("provider-base-url").addEventListener("input", (e) => {
 $<HTMLInputElement>("provider-key").addEventListener("input", () => renderProviderKey());
 
 $("load-models").addEventListener("click", async () => {
-  const input = probeInput(readProviderForm(), savedProvider);
-  if (!input.ok) return providerProblem(input.field, input.error);
-  // Synchronously in the click: Chrome only shows the prompt during a user gesture.
+  clearProblems();
+  const form = readProviderForm();
+  const input = probeInput(form, savedProvider);
+  if (!input.ok) return providerProblem("provider-models-status", input.field, input.error);
+  // The draft first (the prompt closes the popup), then the request synchronously in the click:
+  // Chrome only shows the prompt during a user gesture (and resolves at once if already granted).
+  persistDraft(form);
   const granted = chrome.permissions.request({ origins: [originPattern(input.origin)] });
   const loadButton = $<HTMLButtonElement>("load-models");
   loadButton.disabled = true;
@@ -486,9 +536,12 @@ $("add-header").addEventListener("click", () => {
 });
 
 $("test-provider").addEventListener("click", async () => {
-  const input = probeInput(readProviderForm(), savedProvider);
-  if (!input.ok) return providerProblem(input.field, input.error);
-  // Synchronously in the click: Chrome only shows the prompt during a user gesture.
+  clearProblems();
+  const form = readProviderForm();
+  const input = probeInput(form, savedProvider);
+  if (!input.ok) return providerProblem("provider-note", input.field, input.error);
+  // The draft first (the prompt closes the popup), then the request synchronously in the click.
+  persistDraft(form);
   const granted = chrome.permissions.request({ origins: [originPattern(input.origin)] });
   const testButton = $<HTMLButtonElement>("test-provider");
   testButton.disabled = true;
@@ -508,8 +561,9 @@ $("test-provider").addEventListener("click", async () => {
 });
 
 $("save-provider").addEventListener("click", async () => {
+  clearProblems();
   const built = buildProvider(readProviderForm(), savedProvider);
-  if (!built.ok) return providerProblem(built.field, built.error);
+  if (!built.ok) return providerProblem("provider-note", built.field, built.error);
   // Synchronously in the click (user gesture), and the settings are written in the same turn so a
   // popup closed by the permission prompt still saves them (the proxy re-checks access per call).
   const granted = chrome.permissions.request({ origins: [originPattern(built.origin)] });
@@ -521,6 +575,8 @@ $("save-provider").addEventListener("click", async () => {
     return;
   }
   savedProvider = built.settings;
+  void clearProviderDraft().catch(() => undefined);
+  note("provider-draft-note", "");
   fillProviderForm(providerFormFrom(savedProvider));
   if (await granted.catch(() => false)) {
     note("provider-note", "Saved. The next browse uses it.");
@@ -549,6 +605,8 @@ $("save-provider").addEventListener("click", async () => {
     }
     disarm();
     await clearProviderSettings();
+    await clearProviderDraft().catch(() => undefined);
+    note("provider-draft-note", "");
     savedProvider = null;
     fillProviderForm(providerFormFrom(null));
     note("provider-note", "Removed.");
