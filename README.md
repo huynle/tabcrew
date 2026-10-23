@@ -259,8 +259,8 @@ Every tool except `session_open` takes the `session` handle; tab tools also take
 | `tab_list` | List the session's own tabs. |
 | `tab_close` | Close one of the session's tabs. |
 | `screenshot` | Capture the visible part of a tab (jpeg or png). |
-| `observe` | URL, title, visible text, numbered element table with supported operations, and a fingerprint for `act`. |
-| `act` | One operation (`CLICK`, `TYPE_TEXT`, `SELECT`, `SCROLL_UP`, `SCROLL_DOWN`, `WAIT`) against the latest observation; returns `stale_page` if the page changed. |
+| `observe` | URL, title, visible text, numbered element table with supported operations, controls, and a fingerprint for `act`. Scroll controls of an open dialog or a scrollable panel carry a target such as `"s1"`; while a modal dialog is open, only the dialog (and anything on top of it) is listed. |
+| `act` | One operation (`CLICK`, `TYPE_TEXT`, `SELECT`, `SCROLL_UP`, `SCROLL_DOWN`, `WAIT`) against the latest observation; returns `stale_page` if the page changed. Scroll takes a control's target (`"s1"`, `"page"`) or none for the first listed one. Targets are scrolled into view before input. |
 | `browse` | Let Jev pursue a natural-language goal until DONE, BLOCKED, no progress, `max_steps` or Stop. Returns status, step trace, final page and model usage/cost. |
 | `navigate` | Open an http(s) URL, or go back/forward/reload; waits for load (up to 15 s). |
 | `read_text` | Full text of the page (not just the visible part), up to `max_length`. |
@@ -378,6 +378,7 @@ Unit tests never open a browser, call a paid API, or touch your real home direct
 | `just smoke` | sessions, tabs, screenshot, navigate, read_text, debug_logs | free |
 | `just isolation` | three parallel sessions stay isolated | free |
 | `just guards` | freshness and occlusion guards on local fixture pages | free |
+| `just page-check` | scroll areas, modals, clipped elements and scroll-into-view on a fixture page, in a throwaway headless Chrome (no daemon or extension needed) | free |
 | `just concurrency` | latency of concurrent calls across sessions | free |
 | `just live` | `browse` on Wikipedia and Google Flights | **paid** (OpenRouter) |
 | `just hub-smoke` | `smoke` through the hub-mode shim | free |
@@ -389,7 +390,8 @@ Measured on the development machine: the 3-agent isolation run went from 20.6 s 
 
 ## Known limitations
 
-- Scrolling inside inner panels is not supported; `SCROLL_UP` / `SCROLL_DOWN` scroll the page.
+- Scroll areas are vertical only and at most 5 per page (an open modal's first, then the one under the middle of the viewport, then the largest); horizontal scrollers, custom scrollers that move content with CSS transforms, and scroll areas inside iframes or shadow DOM are not offered.
+- Modal detection relies on `<dialog>` opened with `showModal()`, `aria-modal="true"`, or a `role="dialog"` surrounded by a full-screen backdrop; other overlays still block clicks behind them (`target_covered`).
 - Jev does not yet close popups or overlays that cover its target.
 - `tab_create` returns before the page has loaded; use `navigate` or `browse` next.
 - Background tabs are slower in "My current window" placement because Chrome throttles tabs you aren't looking at.
