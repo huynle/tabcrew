@@ -227,9 +227,9 @@ export class FakeExtension {
     port: number,
     token: string,
     hello: Record<string, unknown> = {},
-    options: { origin?: string } = {},
+    options: { origin?: string; path?: string } = {},
   ): Promise<FakeExtension> {
-    const ext = await FakeExtension.open(port, options.origin);
+    const ext = await FakeExtension.open(port, options.origin, options.path);
     if (Array.isArray(hello.features)) ext.features = hello.features as string[];
     await ext.sendHello({ type: "hello", protocol: V2_PROTOCOL_VERSION, token, extension_version: "test", ...hello });
     return ext;
@@ -265,8 +265,8 @@ export class FakeExtension {
     return ext;
   }
 
-  private static async open(port: number, origin: string | undefined): Promise<FakeExtension> {
-    const ws = new WebSocket(`ws://127.0.0.1:${port}`, origin ? { headers: { origin } } : {});
+  private static async open(port: number, origin: string | undefined, path = ""): Promise<FakeExtension> {
+    const ws = new WebSocket(`ws://127.0.0.1:${port}${path}`, origin ? { headers: { origin } } : {});
     const ext = new FakeExtension(ws);
     await new Promise<void>((resolve, reject) => {
       ws.once("open", () => resolve());

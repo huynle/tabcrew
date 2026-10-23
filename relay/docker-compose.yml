@@ -1,0 +1,35 @@
+# Local Online relay + Postgres:  just relay-up   (pulls OAuth secrets from the macOS keychain)
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: relay
+      POSTGRES_USER: relay
+      POSTGRES_PASSWORD: relay-local-only
+    volumes:
+      - relay-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "relay"]
+      interval: 2s
+      retries: 30
+
+  relay:
+    build:
+      context: ..
+      dockerfile: relay/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8790:8790"
+    environment:
+      RELAY_PUBLIC_URL: http://127.0.0.1:8790
+      DATABASE_URL: postgres://relay:relay-local-only@postgres:5432/relay
+      RELAY_SIGNING_KEY: ${RELAY_SIGNING_KEY:?}
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+
+volumes:
+  relay-pg:

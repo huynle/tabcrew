@@ -120,3 +120,15 @@ live-provider:
 # extension wss to an outside host without host_permissions, and launchWebAuthFlow with the dev ID.
 spike-online:
     node spikes/online-relay/run.mjs
+
+# Online relay, local: in-memory store on 127.0.0.1:8790 with the real OAuth apps (secrets from the keychain).
+relay-dev: build
+    eval "$(relay/scripts/dev-env.sh)" && RELAY_STORE=memory RELAY_HOST=127.0.0.1 node relay/dist/main.js
+
+# Online relay, local: Docker Compose with Postgres (same OAuth apps).
+relay-up:
+    eval "$(relay/scripts/dev-env.sh)" && docker compose -f relay/docker-compose.yml up --build
+
+# Relay store tests against real Postgres (TEST_DATABASE_URL), e.g. from `just relay-up`'s database.
+relay-test-pg url:
+    cd relay && TEST_DATABASE_URL={{url}} npx vitest run src/store.test.ts

@@ -23,13 +23,14 @@
   "workspaces": [
     "shared",
     "daemon",
+    "relay",
     "cli",
     "extension"
   ],
   "scripts": {
-    "build": "npm run build -w shared && npm run build -w daemon && npm run build -w cli && npm run build -w extension",
+    "build": "npm run build -w shared && npm run build -w daemon && npm run build -w relay && npm run build -w cli && npm run build -w extension",
     "build:store": "npm run build -w shared && npm run build:store -w extension",
-    "typecheck": "npm run build -w shared && npm run typecheck -w daemon && npm run typecheck -w cli && npm run typecheck -w extension",
+    "typecheck": "npm run build -w shared && npm run build -w daemon && npm run typecheck -w daemon && npm run typecheck -w relay && npm run typecheck -w cli && npm run typecheck -w extension",
     "test": "npm run test --workspaces --if-present",
     "clean": "npm run clean --workspaces --if-present"
   },
