@@ -115,3 +115,8 @@ hub-concurrency:
 # Paid (cents) hub mode check: one browse on Wikipedia with the popup's model provider (e.g. Provider).
 live-provider:
     TABCREW_TRANSPORT=shim node daemon/scripts/live-provider.mjs
+
+# Online mode phase 0 spike (throwaway headless Chromium, simulated relay + one public wss echo):
+# extension wss to an outside host without host_permissions, and launchWebAuthFlow with the dev ID.
+spike-online:
+    node spikes/online-relay/run.mjs
