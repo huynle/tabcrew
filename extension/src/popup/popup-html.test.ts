@@ -44,12 +44,36 @@ describe("popup.html / popup.ts wiring", () => {
     expect(assigned.every((v) => v === '""')).toBe(true);
   });
 
-  it("requests host access synchronously in the Save and Test clicks, before any await", () => {
-    for (const id of ["save-provider", "test-provider"]) {
+  it("requests host access synchronously in the Save, Test and Load models clicks, before any await", () => {
+    for (const id of ["save-provider", "test-provider", "load-models"]) {
       const body = clickHandler(id);
       const request = body.indexOf("chrome.permissions.request(");
       expect(request, id).toBeGreaterThan(-1);
       expect(body.indexOf("await "), id).toBeGreaterThan(request);
     }
+  });
+
+  it("never prompts for access when the popup opens: the auto-load only checks it", () => {
+    const load = ts.slice(ts.indexOf("async function autoLoadModels("), ts.indexOf("\n}\n", ts.indexOf("async function autoLoadModels(")));
+    expect(load).toContain("chrome.permissions.contains(");
+    expect(load).not.toContain("chrome.permissions.request(");
+    expect(ts.match(/chrome\.permissions\.request\(/g)).toHaveLength(3);
+  });
+
+  it("makes the three models dropdowns with a Custom… text input and guidance under each", () => {
+    const guidance: Record<string, string> = {
+      "provider-decision-model": "Picks each browse step. Use a fast model that reliably returns JSON.",
+      "provider-text-model": "Writes text into form fields. A small, cheap model is fine.",
+      "provider-fallback-model": "Tried once if the text model fails. Optional.",
+    };
+    for (const [id, text] of Object.entries(guidance)) {
+      expect(tag(id)).toMatch(/^<select\b/);
+      expect(tag(`${id}-custom`)).toMatch(/^<input\b[^>]*type="text"[^>]*\bhidden\b/);
+      const after = html.slice(html.indexOf(`id="${id}-custom"`));
+      expect(after.slice(0, after.indexOf("<label") === -1 ? undefined : after.indexOf("<label"))).toContain(text);
+    }
+    expect(html).not.toContain("<datalist");
+    expect(tag("load-models")).toMatch(/^<button\b/);
+    expect(tag("provider-models-status")).toMatch(/class="note"/);
   });
 });

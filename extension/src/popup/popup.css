@@ -202,3 +202,12 @@ select.wide {
 #trust-row {
   margin-top: 4px;
 }
+.models-row {
+  margin-top: 8px;
+}
+#provider-group input[id$="-custom"] {
+  margin-top: 4px;
+}
+.note.guide {
+  min-height: 0;
+}

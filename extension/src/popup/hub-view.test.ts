@@ -180,9 +180,9 @@ describe("providerFormFrom", () => {
 
 describe("providerKeyStatus", () => {
   it("shows only the last 4 characters", () => {
-    expect(providerKeyStatus(SAVED)).toEqual({ text: "Set …1234 (leave empty to keep it)", warn: false });
-    expect(providerKeyStatus({ ...SAVED, api_key: "short" })).toEqual({ text: "Set (leave empty to keep it)", warn: false });
-    expect(providerKeyStatus(null)).toEqual({ text: "Not set — browse disabled", warn: true });
+    expect(providerKeyStatus(SAVED)).toEqual({ text: "Set …1234 (leave empty to keep it)", tone: "" });
+    expect(providerKeyStatus({ ...SAVED, api_key: "short" })).toEqual({ text: "Set (leave empty to keep it)", tone: "" });
+    expect(providerKeyStatus(null)).toEqual({ text: "Not set — browse disabled", tone: "error" });
   });
 });
 

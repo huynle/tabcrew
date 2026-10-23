@@ -12,25 +12,32 @@ import {
   type PopupState,
   type PopupStopResult,
 } from "../config.js";
-import { probeProvider } from "../model/probe.js";
+import { listModels, probeProvider, type ProbeDeps } from "../model/probe.js";
 import {
   PROVIDER_PRESETS,
   clearProviderSettings,
   loadProviderSettings,
+  normalizeBaseUrl,
   originPattern,
   presetFor,
+  recommendedModels,
   saveProviderSettings,
   type ProviderSettings,
 } from "../model/settings.js";
 import { bindPlacementRadios } from "./placement.js";
 import {
+  CUSTOM_MODEL,
   buildProvider,
+  chatModelIds,
   connectionBadge,
   connectionHint,
   finishedRows,
   keyStatus,
   modeNote,
   modelField,
+  modelPicker,
+  modelsStatus,
+  pickedModel,
   popupMode,
   portField,
   portSetting,
@@ -43,6 +50,8 @@ import {
   settingPatch,
   settingsAccess,
   type HeaderRow,
+  type ModelSlot,
+  type ModelsLoad,
   type ProviderField,
   type ProviderForm,
   type SettingsAccess,
@@ -257,12 +266,27 @@ $("trust-hub").addEventListener("click", async () => {
 
 // ---------------------------------------------------------------------------
 // Model provider (hub mode): stored in chrome.storage.local (v2:provider) and used by the service
-// worker's model_call proxy. The key input is write-only. Save and Test ask for host access to the
-// provider's origin synchronously in the click (a user gesture), before anything is awaited.
+// worker's model_call proxy. The key input is write-only. Load models, Test and Save ask for host
+// access to the provider's origin synchronously in the click (a user gesture), before anything is
+// awaited; opening the popup only lists the models when access was already granted.
 // ---------------------------------------------------------------------------
 
 let savedProvider: ProviderSettings | null = null;
 let providerLoaded = false;
+/** Chat model ids listed by the provider at `modelsBase`; null until loaded (or after the URL changed). */
+let modelChoices: readonly string[] | null = null;
+let modelsBase: string | null = null;
+
+const FETCH_DEPS: ProbeDeps = { fetch: (url, init) => fetch(url, init) };
+
+const MODEL_SELECTS: Record<ModelSlot, string> = {
+  decision_model: "provider-decision-model",
+  text_model: "provider-text-model",
+  fallback_text_model: "provider-fallback-model",
+};
+const MODEL_SLOTS = Object.keys(MODEL_SELECTS) as ModelSlot[];
+const modelSelect = (slot: ModelSlot) => $<HTMLSelectElement>(MODEL_SELECTS[slot]);
+const customInput = (slot: ModelSlot) => $<HTMLInputElement>(`${MODEL_SELECTS[slot]}-custom`);
 
 const PROVIDER_INPUTS: Record<Exclude<ProviderField, "headers">, string> = {
   base_url: "provider-base-url",
@@ -284,6 +308,90 @@ async function loadProvider(openIfMissing: boolean): Promise<void> {
   savedProvider = await loadProviderSettings().catch(() => null);
   fillProviderForm(providerFormFrom(savedProvider));
   if (openIfMissing && !savedProvider) $<HTMLDetailsElement>("advanced").open = true;
+  if (savedProvider) void autoLoadModels(savedProvider);
+}
+
+/** On open: list the saved provider's models if access was already granted (never prompts). */
+async function autoLoadModels(settings: ProviderSettings): Promise<void> {
+  const base = normalizeBaseUrl(settings.base_url);
+  if (!base.ok) return;
+  const granted = await chrome.permissions.contains({ origins: [originPattern(base.origin)] }).catch(() => false);
+  if (!granted) return;
+  note("provider-models-status", "Loading models…");
+  showModels(settings.base_url, await listModels(settings, FETCH_DEPS));
+}
+
+function normalizedBase(raw: string): string | null {
+  const base = normalizeBaseUrl(raw);
+  return base.ok ? base.url : null;
+}
+
+/** Forget the listed models when the base URL no longer matches them. */
+function syncModelsBase(): void {
+  if (modelsBase === null || normalizedBase($<HTMLInputElement>("provider-base-url").value) === modelsBase) return;
+  modelChoices = null;
+  modelsBase = null;
+  note("provider-models-status", "");
+  renderModelPickers(currentModels());
+}
+
+/** Rebuild the three dropdowns for these values; true if a recommendation was preselected. */
+function renderModelPickers(values: Readonly<Record<ModelSlot, string>>): boolean {
+  const recommended = recommendedModels($<HTMLInputElement>("provider-base-url").value);
+  let preselected = false;
+  for (const slot of MODEL_SLOTS) {
+    const view = modelPicker({
+      slot,
+      models: modelChoices,
+      value: values[slot],
+      saved: savedProvider?.[slot] ?? "",
+      saved_provider: savedProvider !== null,
+      recommended: recommended?.[slot],
+    });
+    const select = modelSelect(slot);
+    select.replaceChildren(
+      ...view.options.map((o) => {
+        const option = document.createElement("option");
+        option.value = o.value;
+        option.textContent = o.label;
+        option.disabled = o.disabled;
+        return option;
+      }),
+    );
+    select.value = view.selected;
+    const custom = customInput(slot);
+    custom.hidden = view.custom === null;
+    if (view.custom !== null) custom.value = view.custom;
+    preselected ||= view.preselected;
+  }
+  return preselected;
+}
+
+function currentModels(): Record<ModelSlot, string> {
+  const values = {} as Record<ModelSlot, string>;
+  for (const slot of MODEL_SLOTS) values[slot] = pickedModel(modelSelect(slot).value, customInput(slot).value);
+  return values;
+}
+
+/** Show a model list result for `baseUrl` (ignored if the URL was changed meanwhile). */
+function showModels(baseUrl: string, load: ModelsLoad): void {
+  const base = normalizedBase(baseUrl);
+  if (base === null || normalizedBase($<HTMLInputElement>("provider-base-url").value) !== base) return;
+  if (load.ok) {
+    modelChoices = chatModelIds(load.models);
+    modelsBase = base;
+  }
+  const preselected = renderModelPickers(currentModels());
+  const status = modelsStatus(load, baseUrl, preselected);
+  note("provider-models-status", status.text, status.tone);
+}
+
+for (const slot of MODEL_SLOTS) {
+  modelSelect(slot).addEventListener("change", () => {
+    const custom = customInput(slot);
+    custom.hidden = modelSelect(slot).value !== CUSTOM_MODEL;
+    if (!custom.hidden) custom.focus();
+  });
 }
 
 function headerRow(row: HeaderRow): HTMLDivElement {
@@ -309,15 +417,14 @@ function fillProviderForm(form: ProviderForm): void {
   $<HTMLInputElement>("provider-base-url").value = form.base_url;
   $<HTMLInputElement>("provider-key").value = "";
   $("provider-headers").replaceChildren(...form.headers.map(headerRow));
-  $<HTMLInputElement>("provider-decision-model").value = form.decision_model;
-  $<HTMLInputElement>("provider-text-model").value = form.text_model;
-  $<HTMLInputElement>("provider-fallback-model").value = form.fallback_text_model;
+  syncModelsBase();
+  renderModelPickers(form);
   renderProviderKey();
 }
 
 function renderProviderKey(): void {
-  const status = providerKeyStatus(savedProvider);
-  note("provider-key-status", status.text, status.warn ? "error" : "");
+  const status = providerKeyStatus(savedProvider, $<HTMLInputElement>("provider-key").value);
+  note("provider-key-status", status.text, status.tone);
   $<HTMLButtonElement>("remove-provider").disabled = savedProvider === null;
 }
 
@@ -332,9 +439,7 @@ function readProviderForm(): ProviderForm {
     base_url: value("provider-base-url"),
     api_key: value("provider-key"),
     headers,
-    decision_model: value("provider-decision-model"),
-    text_model: value("provider-text-model"),
-    fallback_text_model: value("provider-fallback-model"),
+    ...currentModels(),
   };
 }
 
@@ -348,10 +453,30 @@ $<HTMLSelectElement>("provider-preset").addEventListener("change", (e) => {
   const url = $<HTMLInputElement>("provider-base-url");
   if (preset?.base_url) url.value = preset.base_url;
   else url.focus();
+  syncModelsBase();
 });
 
 $<HTMLInputElement>("provider-base-url").addEventListener("input", (e) => {
   $<HTMLSelectElement>("provider-preset").value = presetFor((e.target as HTMLInputElement).value);
+  syncModelsBase();
+});
+
+$<HTMLInputElement>("provider-key").addEventListener("input", () => renderProviderKey());
+
+$("load-models").addEventListener("click", async () => {
+  const input = probeInput(readProviderForm(), savedProvider);
+  if (!input.ok) return providerProblem(input.field, input.error);
+  // Synchronously in the click: Chrome only shows the prompt during a user gesture.
+  const granted = chrome.permissions.request({ origins: [originPattern(input.origin)] });
+  const loadButton = $<HTMLButtonElement>("load-models");
+  loadButton.disabled = true;
+  note("provider-models-status", "Loading models…");
+  try {
+    if (!(await granted.catch(() => false))) return showModels(input.input.base_url, { ok: false, denied: true });
+    showModels(input.input.base_url, await listModels(input.input, FETCH_DEPS));
+  } finally {
+    loadButton.disabled = false;
+  }
 });
 
 $("add-header").addEventListener("click", () => {
@@ -373,14 +498,8 @@ $("test-provider").addEventListener("click", async () => {
       note("provider-note", `✗ Access to ${input.origin} was not granted.`, "error");
       return;
     }
-    const result = await probeProvider(input.input, { fetch: (url, init) => fetch(url, init) });
-    $("provider-models").replaceChildren(
-      ...result.models.map((id) => {
-        const option = document.createElement("option");
-        option.value = id;
-        return option;
-      }),
-    );
+    const result = await probeProvider(input.input, FETCH_DEPS);
+    showModels(input.input.base_url, result.models_error ? { ok: false, error: result.models_error } : { ok: true, models: result.models });
     const summary = probeSummary(result);
     note("provider-note", summary.text, summary.ok ? "ok" : "error");
   } finally {

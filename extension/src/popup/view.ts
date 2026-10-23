@@ -1,6 +1,6 @@
 import type { V2KeyView, V2ValueView } from "@tabcrew/shared/v2";
 import { defaultPort, parsePort, type ConnectionMode, type ConnectionStatus, type PopupFinishedInfo, type PopupSessionInfo, type PopupState } from "../config.js";
-import type { ProbeInput, ProbeResult } from "../model/probe.js";
+import type { ModelList, ProbeInput, ProbeResult } from "../model/probe.js";
 import { PROVIDER_PRESETS, keyHint, normalizeBaseUrl, presetFor, validateHeaders, type PresetId, type ProviderSettings } from "../model/settings.js";
 import { NOT_PAIRED_TEXT } from "../pairing.js";
 
@@ -304,13 +304,15 @@ export function providerFormFrom(settings: ProviderSettings | null): ProviderFor
 
 export interface ProviderKeyStatus {
   readonly text: string;
-  readonly warn: boolean;
+  readonly tone: "" | "warn" | "error";
 }
 
-export function providerKeyStatus(settings: ProviderSettings | null): ProviderKeyStatus {
-  if (!settings) return { text: "Not set — browse disabled", warn: true };
+/** The key status line; `typed` is what's in the (write-only) key input right now. */
+export function providerKeyStatus(settings: ProviderSettings | null, typed = ""): ProviderKeyStatus {
+  if (typed.trim()) return { text: "Not saved yet — click Save", tone: "warn" };
+  if (!settings) return { text: "Not set — browse disabled", tone: "error" };
   const hint = keyHint(settings.api_key);
-  return { text: `Set${hint ? ` …${hint}` : ""} (leave empty to keep it)`, warn: false };
+  return { text: `Set${hint ? ` …${hint}` : ""} (leave empty to keep it)`, tone: "" };
 }
 
 export type ProviderField = "base_url" | "api_key" | "headers" | "decision_model" | "text_model";
@@ -382,7 +384,7 @@ export function buildProvider(form: ProviderForm, saved: ProviderSettings | null
 
 export type ProbeInputResult = { readonly ok: true; readonly input: ProbeInput; readonly origin: string } | FormError;
 
-/** What the Test button sends: URL and key required, the decision model optional. */
+/** What Load models and Test send: URL and key required, the decision model optional (Test only). */
 export function probeInput(form: ProviderForm, saved: ProviderSettings | null): ProbeInputResult {
   const conn = connectionPart(form, saved);
   if (!conn.ok) return conn;
@@ -413,4 +415,104 @@ export function probeSummary(result: ProbeResult): ProbeSummary {
   }
   if (models_error) return { ok: false, text: `✗ ${models_error}` };
   return { ok: true, text: `✓ ${modelCount(models.length)}. Set a decision model to test a chat call.` };
+}
+
+// ---------------------------------------------------------------------------
+// Model dropdowns (hub mode): filled from GET {base}/models by Load models / Test (or on open when
+// access is already granted), with the preset's recommendations and a Custom… text entry.
+// ---------------------------------------------------------------------------
+
+export type ModelSlot = "decision_model" | "text_model" | "fallback_text_model";
+
+/** The dropdown value that reveals the custom model id input. */
+export const CUSTOM_MODEL = "__custom__";
+
+/** Ids that are not chat models (embeddings, speech, rerankers, moderation). */
+const NON_CHAT_MODEL = /embed|whisper|tts|rerank|moderation/i;
+
+/** The chat-capable model ids, sorted and unique. */
+export function chatModelIds(ids: readonly string[]): string[] {
+  return [...new Set(ids.filter((id) => !NON_CHAT_MODEL.test(id)))].sort();
+}
+
+export interface ModelOption {
+  readonly value: string;
+  readonly label: string;
+  readonly disabled: boolean;
+}
+
+export interface ModelPickerInput {
+  readonly slot: ModelSlot;
+  /** Chat model ids from the provider, or null until they are loaded. */
+  readonly models: readonly string[] | null;
+  /** The field's current value. */
+  readonly value: string;
+  /** The stored value ("" when none). */
+  readonly saved: string;
+  /** The preset's recommendation for this field, if any. */
+  readonly recommended: string | undefined;
+  /** A provider is stored: an empty optional fallback then means "None" was chosen. */
+  readonly saved_provider?: boolean;
+}
+
+export interface ModelPicker {
+  readonly options: readonly ModelOption[];
+  /** The option to select ("" = placeholder / None, CUSTOM_MODEL = custom input). */
+  readonly selected: string;
+  /** The custom input's text when Custom… is selected, else null (input hidden). */
+  readonly custom: string | null;
+  /** The recommendation was selected because the field was empty. */
+  readonly preselected: boolean;
+}
+
+const option = (value: string, label: string, disabled = false): ModelOption => ({ value, label, disabled });
+
+export function modelPicker(input: ModelPickerInput): ModelPicker {
+  const value = input.value.trim();
+  const models = input.models ?? [];
+  const head =
+    input.slot === "fallback_text_model"
+      ? [option("", "None")]
+      : [option("", input.models === null ? "Load models to choose…" : "Choose a model…", true)];
+  const listed = models.map((id) => option(id, id === input.recommended ? `${id} (recommended)` : id));
+  const custom = option(CUSTOM_MODEL, "Custom…");
+  if (!value) {
+    const keptNone = input.slot === "fallback_text_model" && input.saved_provider === true;
+    const preselect = !keptNone && input.recommended !== undefined && models.includes(input.recommended);
+    return { options: [...head, ...listed, custom], selected: preselect ? input.recommended! : "", custom: null, preselected: preselect };
+  }
+  if (models.includes(value)) return { options: [...head, ...listed, custom], selected: value, custom: null, preselected: false };
+  if (value === input.saved.trim()) {
+    return { options: [...head, option(value, `${value} (saved)`), ...listed, custom], selected: value, custom: null, preselected: false };
+  }
+  return { options: [...head, ...listed, custom], selected: CUSTOM_MODEL, custom: value, preselected: false };
+}
+
+/** The model a dropdown stands for: its value, or the custom input's text for Custom…. */
+export function pickedModel(selected: string, customText: string): string {
+  return selected === CUSTOM_MODEL ? customText.trim() : selected;
+}
+
+export type ModelsLoad = ModelList | { readonly ok: false; readonly denied: true };
+
+export interface ModelsStatus {
+  readonly text: string;
+  readonly tone: "ok" | "warn" | "error";
+}
+
+/** The status line under Load models. */
+export function modelsStatus(load: ModelsLoad, baseUrl: string, preselected: boolean): ModelsStatus {
+  const base = normalizeBaseUrl(baseUrl);
+  const origin = base.ok ? base.origin : baseUrl;
+  const host = base.ok ? new URL(base.origin).host : baseUrl;
+  if (!load.ok) {
+    if ("denied" in load) {
+      return { text: `✗ Access to ${origin} was not granted, so TabCrew can't list its models. Click Load models and choose Allow.`, tone: "error" };
+    }
+    return { text: `✗ ${load.error}`, tone: "error" };
+  }
+  const count = chatModelIds(load.models).length;
+  if (count === 0) return { text: `${host} listed no chat models. Choose Custom… and type the model id.`, tone: "warn" };
+  const picked = preselected ? " · recommended models picked, click Save to use them" : "";
+  return { text: `✓ ${modelCount(count)} from ${host}${picked}`, tone: "ok" };
 }

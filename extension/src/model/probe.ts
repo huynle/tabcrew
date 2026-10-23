@@ -1,7 +1,7 @@
 /**
- * The popup's "Test" button: GET {base}/models (fills the model suggestions) and a tiny
- * json_object chat call with the decision model. Runs in the popup with the form's values, using
- * the same headers, fetch options and redaction as the model_call proxy.
+ * The popup's provider checks: "Load models" (GET {base}/models, fills the model dropdowns) and
+ * "Test" (the same list plus a tiny json_object chat call with the decision model). Run in the popup
+ * with the form's values, using the same headers, fetch options and redaction as the model_call proxy.
  */
 
 import {
@@ -66,15 +66,17 @@ function modelIds(json: unknown): string[] {
   return [...new Set(ids)].sort();
 }
 
-export async function probeProvider(input: ProbeInput, deps: ProbeDeps): Promise<ProbeResult> {
+/** What listing the models needs: no model names. */
+export type ConnectionInput = Pick<ProviderSettings, "base_url" | "api_key" | "headers">;
+
+export type ModelList = { readonly ok: true; readonly models: readonly string[] } | { readonly ok: false; readonly error: string };
+
+/** GET {base}/models: the provider's model ids (sorted, unique), or why the list is unavailable. */
+export async function listModels(input: ConnectionInput, deps: ProbeDeps): Promise<ModelList> {
   const base = normalizeBaseUrl(input.base_url);
-  if (!base.ok) return { models: [], models_error: base.error, chat: null };
-  const now = deps.now ?? Date.now;
+  if (!base.ok) return { ok: false, error: base.error };
   const timeoutMs = deps.timeoutMs ?? 20_000;
   const secrets = providerSecrets(input);
-
-  let models: string[] = [];
-  let modelsError: string | null = null;
   try {
     const response = await deps.fetch(`${base.url}/models`, {
       ...PROVIDER_FETCH_INIT,
@@ -83,15 +85,20 @@ export async function probeProvider(input: ProbeInput, deps: ProbeDeps): Promise
       signal: AbortSignal.timeout(timeoutMs),
     });
     const text = await readCapped(response, MAX_REPLY_BYTES);
-    if (response.ok) models = modelIds(parseJsonOrNull(text));
-    else modelsError = httpError(response.status, text, secrets);
+    return response.ok ? { ok: true, models: modelIds(parseJsonOrNull(text)) } : { ok: false, error: httpError(response.status, text, secrets) };
   } catch (err) {
-    modelsError = fetchFailure(err, base.origin, timeoutMs, secrets);
+    return { ok: false, error: fetchFailure(err, base.origin, timeoutMs, secrets) };
   }
+}
 
+/** A tiny json_object chat call with the decision model; null when none is set (or the URL is invalid). */
+export async function checkChat(input: ProbeInput, deps: ProbeDeps): Promise<ChatProbe | null> {
+  const base = normalizeBaseUrl(input.base_url);
   const model = input.decision_model.trim();
-  if (!model) return { models, models_error: modelsError, chat: null };
-  let chat: ChatProbe;
+  if (!base.ok || !model) return null;
+  const now = deps.now ?? Date.now;
+  const timeoutMs = deps.timeoutMs ?? 20_000;
+  const secrets = providerSecrets(input);
   const started = now();
   try {
     const response = await deps.fetch(`${base.url}/chat/completions`, {
@@ -107,9 +114,15 @@ export async function probeProvider(input: ProbeInput, deps: ProbeDeps): Promise
       signal: AbortSignal.timeout(timeoutMs),
     });
     const text = await readCapped(response, MAX_REPLY_BYTES);
-    chat = response.ok ? { ok: true, model, ms: now() - started } : { ok: false, error: httpError(response.status, text, secrets) };
+    return response.ok ? { ok: true, model, ms: now() - started } : { ok: false, error: httpError(response.status, text, secrets) };
   } catch (err) {
-    chat = { ok: false, error: fetchFailure(err, base.origin, timeoutMs, secrets) };
+    return { ok: false, error: fetchFailure(err, base.origin, timeoutMs, secrets) };
   }
-  return { models, models_error: modelsError, chat };
+}
+
+/** The Test button: the model list, then the chat check. */
+export async function probeProvider(input: ProbeInput, deps: ProbeDeps): Promise<ProbeResult> {
+  const list = await listModels(input, deps);
+  const chat = await checkChat(input, deps);
+  return list.ok ? { models: list.models, models_error: null, chat } : { models: [], models_error: list.error, chat };
 }

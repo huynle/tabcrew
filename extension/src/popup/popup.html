@@ -72,13 +72,22 @@
         <label>Headers (optional)</label>
         <div id="provider-headers"></div>
         <button id="add-header" title="Add a request header, e.g. OpenAI-Organization">+ Header</button>
+        <div class="row models-row">
+          <button id="load-models" title="List the provider's models (needs only the base URL and API key)">Load models</button>
+        </div>
+        <p id="provider-models-status" class="note"></p>
         <label for="provider-decision-model">Decision model</label>
-        <input id="provider-decision-model" class="wide" type="text" list="provider-models" autocomplete="off" spellcheck="false" />
+        <select id="provider-decision-model" class="wide model-select" data-slot="decision_model"></select>
+        <input id="provider-decision-model-custom" class="wide" type="text" autocomplete="off" spellcheck="false" placeholder="model id" hidden />
+        <p class="note guide">Picks each browse step. Use a fast model that reliably returns JSON.</p>
         <label for="provider-text-model">Text model</label>
-        <input id="provider-text-model" class="wide" type="text" list="provider-models" autocomplete="off" spellcheck="false" />
+        <select id="provider-text-model" class="wide model-select" data-slot="text_model"></select>
+        <input id="provider-text-model-custom" class="wide" type="text" autocomplete="off" spellcheck="false" placeholder="model id" hidden />
+        <p class="note guide">Writes text into form fields. A small, cheap model is fine.</p>
         <label for="provider-fallback-model">Fallback text model (optional)</label>
-        <input id="provider-fallback-model" class="wide" type="text" list="provider-models" autocomplete="off" spellcheck="false" />
-        <datalist id="provider-models"></datalist>
+        <select id="provider-fallback-model" class="wide model-select" data-slot="fallback_text_model"></select>
+        <input id="provider-fallback-model-custom" class="wide" type="text" autocomplete="off" spellcheck="false" placeholder="model id" hidden />
+        <p class="note guide">Tried once if the text model fails. Optional.</p>
         <div class="row buttons">
           <button id="test-provider" title="List the models and send a tiny chat request">Test</button>
           <button id="save-provider">Save</button>
@@ -87,7 +96,7 @@
         <p id="provider-note" class="note"></p>
         <p class="note">
           Kept in this browser only. Model calls go from this extension straight to the provider; TabCrew asks
-          for access to the provider's site when you save.
+          for access to the provider's site when you load models, test or save.
         </p>
       </div>
 

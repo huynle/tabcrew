@@ -11,6 +11,7 @@ import {
   originPattern,
   parseProviderSettings,
   presetFor,
+  recommendedModels,
   saveProviderSettings,
   validateHeaders,
   type ProviderSettings,
@@ -41,6 +42,14 @@ describe("presets", () => {
     expect(presetFor("https://openrouter.ai/api/v1")).toBe("openrouter");
     expect(presetFor("https://example.com/v1")).toBe("custom");
     expect(presetFor("")).toBe("custom");
+  });
+
+  it("recommends verified models for the Provider presets, the daemon defaults for OpenRouter, none for custom", () => {
+    const provider = { decision_model: "gemini-3.6-flash", text_model: "gemini-3.1-flash-lite", fallback_text_model: "gpt-6-luna" };
+    expect(recommendedModels("https://llm.example.com/v1")).toEqual(provider);
+    expect(recommendedModels("https://llm2.example.com/v1/")).toEqual(provider);
+    expect(recommendedModels("https://openrouter.ai/api/v1")).toEqual({ decision_model: "typesafe/jev-1.13", text_model: "inception/mercury-2.5" });
+    expect(recommendedModels("https://llm.example/v1")).toBeNull();
   });
 });
 
