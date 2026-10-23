@@ -286,3 +286,111 @@ describe("service worker popup settings", () => {
     expect((await popupState()).service).toBeNull();
   });
 });
+
+describe("service worker shared groups", () => {
+  const alice = { short_id: "aaaa1111", label: "alice" };
+  const bob = { short_id: "bbbb2222", label: "bob" };
+  let port: FakePort;
+
+  function popup<T>(msg: unknown): Promise<T> {
+    return new Promise((resolve) => fake.chrome.runtime.onMessage.fire(msg, {}, (r) => resolve(r as T)));
+  }
+
+  async function request(id: string, op: string, s: typeof alice, args: object = {}) {
+    port.postMessage({ type: "request", request: { type: "request", id, op, session: s, args } });
+    await settle();
+    return port
+      .messages<{ type: string; frame: { id: string; ok: boolean; result?: any; error?: { code: string } } }>()
+      .find((m) => m.type === "frame" && m.frame.id === id)!.frame;
+  }
+
+  beforeEach(async () => {
+    const win = fake.addWindow({ focused: true });
+    fake.addTab({ windowId: win.id, url: "https://user.example", active: true });
+    await boot();
+    port = offscreenConnects();
+    port.postMessage({ type: "status", status: "connected" });
+    await settle();
+  });
+
+  it("reports TabCrew groups, the default group name and the finish mode in the popup state", async () => {
+    expect(await popupState()).toMatchObject({
+      groups: [{ group_id: -1, name: "TabCrew", active_sessions: 0, finished_tabs: 0, is_default: true }],
+      group_name: "TabCrew",
+      finish_mode: "keep",
+    });
+    const a = await request("r1", "tab_create", alice);
+    await request("r2", "tab_create", bob);
+    const groupId = fake.tabs.get(a.result.tab_id)!.groupId;
+    expect((await popupState()).groups).toEqual([
+      { group_id: groupId, name: "TabCrew", active_sessions: 2, finished_tabs: 0, is_default: true },
+    ]);
+  });
+
+  it("v2:set_group_name and v2:set_finish_mode store valid settings and refuse invalid ones", async () => {
+    expect(await popup({ type: "v2:set_group_name", name: " Work  stuff " })).toEqual({ ok: true });
+    expect(await popup({ type: "v2:set_finish_mode", mode: "collect" })).toEqual({ ok: true });
+    expect(await popupState()).toMatchObject({ group_name: "Work stuff", finish_mode: "collect" });
+    expect((await popup<{ ok: boolean }>({ type: "v2:set_group_name", name: "✓ nope" })).ok).toBe(false);
+    expect((await popup<{ ok: boolean }>({ type: "v2:set_finish_mode", mode: "burn" })).ok).toBe(false);
+    expect(await popupState()).toMatchObject({ group_name: "Work stuff", finish_mode: "collect" });
+    // New sessions join the group with the new default name.
+    const a = await request("r1", "tab_create", alice);
+    expect(fake.groups.get(fake.tabs.get(a.result.tab_id)!.groupId)!.title).toBe("Work stuff");
+  });
+
+  it("v2:create_group registers a name agents can list and join", async () => {
+    expect(await popup({ type: "v2:create_group", name: "Research" })).toEqual({ ok: true });
+    expect((await popupState()).groups!.map((g) => [g.group_id, g.name])).toEqual([
+      [-1, "TabCrew"],
+      [-2, "Research"],
+    ]);
+    expect((await request("r1", "group_list", alice)).result).toEqual({
+      groups: [
+        { name: "TabCrew", mine: true },
+        { name: "Research", mine: false },
+      ],
+    });
+    expect((await popup<{ ok: boolean }>({ type: "v2:create_group", name: "" })).ok).toBe(false);
+  });
+
+  it("v2:rename_group renames a TabCrew group and refuses the user's groups", async () => {
+    const a = await request("r1", "tab_create", alice);
+    const groupId = fake.tabs.get(a.result.tab_id)!.groupId;
+    expect(await popup({ type: "v2:rename_group", group_id: groupId, name: "Main" })).toEqual({ ok: true });
+    expect(fake.groups.get(groupId)!.title).toBe("Main");
+    expect(await popupState()).toMatchObject({ group_name: "Main" });
+
+    const userTab = fake.addTab({ windowId: [...fake.windows.keys()][0]! });
+    const userGroup = await fake.chrome.tabs.group({ tabIds: [userTab.id] });
+    await fake.chrome.tabGroups.update(userGroup, { title: "Mine" });
+    expect((await popup<{ ok: boolean }>({ type: "v2:rename_group", group_id: userGroup, name: "Hacked" })).ok).toBe(false);
+    expect(fake.groups.get(userGroup)!.title).toBe("Mine");
+  });
+
+  it("browser startup wipes ownership before anything else uses it", async () => {
+    const a = await request("r1", "tab_create", alice);
+    fake.chrome.runtime.onStartup.fire();
+    const listed = await request("r2", "tab_list", alice);
+    expect(listed.result).toEqual({ tabs: [] });
+    expect((await request("r3", "screenshot", alice, { tab_id: a.result.tab_id })).error).toMatchObject({ code: "tab_not_owned" });
+  });
+
+  it("finishes sessions missing from the welcome with the default mode and reports the rest", async () => {
+    const a = await request("r1", "tab_create", alice, { url: "https://a" });
+    const b = await request("r2", "tab_create", bob, { url: "https://b" });
+    port.postMessage({ type: "welcome", welcome: { type: "welcome", protocol: 2, sessions: [bob] } });
+    await settle();
+    expect(port.messages().at(-1)).toEqual({
+      type: "frame",
+      frame: {
+        type: "event",
+        event: "groups",
+        groups: [{ short_id: bob.short_id, group: "TabCrew", tabs: [{ tab_id: b.result.tab_id, url: "https://b", title: "" }] }],
+      },
+    });
+    expect(fake.tabs.has(a.result.tab_id)).toBe(true);
+    expect((await request("r3", "tab_list", alice)).result).toEqual({ tabs: [] });
+    expect((await popupState()).groups![0]).toMatchObject({ active_sessions: 1, finished_tabs: 1 });
+  });
+});

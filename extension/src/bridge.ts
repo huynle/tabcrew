@@ -3,13 +3,13 @@
  * blocked socket can never freeze the service worker.
  *
  * Daemon mode (a launchd daemon with a token):
- * - Sends `hello` (protocol 2 + token) as the first frame; the daemon answers `welcome`
+ * - Sends `hello` (protocol 2 + token, `features: ["groups"]`) as the first frame; the daemon answers `welcome`
  *   or closes with 4401 if the token is wrong.
  * - No token → status `needs_token`, no connection. 4401 → status `unauthorized` and no
  *   retries until the config changes.
  *
  * Hub mode (no token; trust-on-first-use pin, see shared/src/v2.ts):
- * - `hello` carries `mode: "hub"`, `features: ["model_call"]` and the pin: `{state:"new", secret}`
+ * - `hello` carries `mode: "hub"`, `features: ["model_call", "groups"]` and the pin: `{state:"new", secret}`
  *   until a hub stored the secret, `{state:"pinned", nonce_e}` afterwards.
  * - `new` must be answered by `welcome.pin = {state:"stored"}`; `pinned` by a challenge whose
  *   `hub_proof` (HMAC-SHA256, WebCrypto) is checked before anything else happens, then `auth` is
@@ -29,6 +29,7 @@
 import {
   V2_CLOSE_BAD_HELLO,
   V2_CLOSE_PIN_MISMATCH,
+  V2_EXT_FEATURE_GROUPS,
   V2_EXT_FEATURE_MODEL_CALL,
   V2_PIN_NONCE_BYTES,
   V2_PROTOCOL_VERSION,
@@ -274,7 +275,13 @@ export class Bridge {
 
   private hello(conn: Connection, pinConfirmed: boolean): V2ExtensionFrame {
     if (conn.mode === "daemon") {
-      return { type: "hello", protocol: V2_PROTOCOL_VERSION, token: conn.token ?? "", extension_version: this.deps.extensionVersion };
+      return {
+        type: "hello",
+        protocol: V2_PROTOCOL_VERSION,
+        token: conn.token ?? "",
+        extension_version: this.deps.extensionVersion,
+        features: [V2_EXT_FEATURE_GROUPS],
+      };
     }
     const secret = conn.secret!;
     const pinned = pinConfirmed || this.storedSecret === secret;
@@ -284,7 +291,7 @@ export class Bridge {
       protocol: V2_PROTOCOL_VERSION,
       extension_version: this.deps.extensionVersion,
       mode: "hub",
-      features: [V2_EXT_FEATURE_MODEL_CALL],
+      features: [V2_EXT_FEATURE_MODEL_CALL, V2_EXT_FEATURE_GROUPS],
       pin: conn.pin,
     };
   }

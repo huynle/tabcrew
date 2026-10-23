@@ -83,7 +83,7 @@ describe("Bridge hub mode: hello", () => {
       protocol: 2,
       extension_version: "0.6.0",
       mode: "hub",
-      features: ["model_call"],
+      features: ["model_call", "groups"],
       pin: { state: "new", secret: SECRET },
     });
     expect(ws.frames()[0]).not.toHaveProperty("token");
@@ -93,7 +93,7 @@ describe("Bridge hub mode: hello", () => {
     const { bridge } = makeBridge({ current: hubConfig(true) });
     const ws = await opened(bridge);
     const hello = ws.frames()[0]!;
-    expect(hello).toMatchObject({ type: "hello", mode: "hub", features: ["model_call"], pin: { state: "pinned" } });
+    expect(hello).toMatchObject({ type: "hello", mode: "hub", features: ["model_call", "groups"], pin: { state: "pinned" } });
     expect((hello.pin as { nonce_e: string }).nonce_e).toMatch(/^[0-9a-f]{32}$/);
     expect(JSON.stringify(hello)).not.toContain(SECRET);
     ws.serverClose(1006);
@@ -305,6 +305,6 @@ describe("Bridge hub mode: model calls", () => {
     ws.serverSend({ type: "welcome", protocol: 2, sessions: [] });
     ws.serverSend(MODEL_CALL);
     expect(onModelCall).not.toHaveBeenCalled();
-    expect(ws.frames()[0]).toEqual({ type: "hello", protocol: 2, token: "t", extension_version: "0.6.0" });
+    expect(ws.frames()[0]).toEqual({ type: "hello", protocol: 2, token: "t", extension_version: "0.6.0", features: ["groups"] });
   });
 });
