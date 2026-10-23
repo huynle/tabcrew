@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   authorize,
+  EXT_ORIGIN,
   EXT_REDIRECT,
   extLogin,
   mcpLogin,
@@ -197,6 +198,24 @@ describe("refresh tokens", () => {
     const other = await register(t.url);
     const r = await token(t.url, { grant_type: "refresh_token", refresh_token: first.refresh_token, client_id: other.json.client_id });
     expect(r.json.error).toBe("invalid_grant");
+  });
+});
+
+describe("/token CORS", () => {
+  it("lets the TabCrew extension read token replies and nobody else", async () => {
+    const pre = await fetch(`${t.url}/token`, { method: "OPTIONS", headers: { origin: EXT_ORIGIN } });
+    expect(pre.status).toBe(204);
+    expect(pre.headers.get("access-control-allow-origin")).toBe(EXT_ORIGIN);
+    const ok = await fetch(`${t.url}/token`, {
+      method: "POST",
+      headers: { origin: EXT_ORIGIN, "content-type": "application/x-www-form-urlencoded" },
+      body: "grant_type=refresh_token&refresh_token=nope&client_id=tabcrew-extension",
+    });
+    expect(ok.headers.get("access-control-allow-origin")).toBe(EXT_ORIGIN);
+    expect((await ok.json()).error).toBe("invalid_grant");
+    const web = await fetch(`${t.url}/token`, { method: "POST", headers: { origin: "https://evil.example" }, body: "" });
+    expect(web.status).toBe(403);
+    expect(web.headers.get("access-control-allow-origin")).toBeNull();
   });
 });
 

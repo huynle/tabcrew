@@ -1,3 +1,4 @@
+import { ONLINE_KEY, parseOnlineAccount, signedIn } from "./online.js";
 import {
   V2_DEFAULT_GROUP_NAME,
   V2_EXTENSION_PORT,
@@ -19,6 +20,13 @@ export const PORT_KEY = "v2:port";
 export const MODE_KEY = "v2:mode";
 /** Hub mode TOFU pin (`HubPin`); secret, never leaves the extension except to the hub on first pairing. */
 export const HUB_PIN_KEY = "v2:hub_pin";
+/** "Pause agents": while true every agent request and model call is refused, in every mode. */
+export const PAUSED_KEY = "v2:agents_paused";
+/**
+ * Online mode: the relay URL and browser name as typed in the popup, saved as they are typed: the
+ * popup closes when the sign-in window opens, so nothing may live only in the popup.
+ */
+export const ONLINE_PREFS_KEY = "v2:online_prefs";
 /** Where new sessions open their tabs (see `Placement`); absent means "shared_window". */
 export const PLACEMENT_KEY = "v2:placement";
 /** Name of the default shared TabCrew group (`parseGroupName`); absent means "TabCrew". */
@@ -195,19 +203,23 @@ export function parseOwnership(stored: Record<string, unknown>): OwnershipState 
 }
 
 /**
- * How the extension connects: "auto" (default) is daemon mode when a daemon token is stored and hub
- * mode otherwise; "hub" / "daemon" force a mode (the popup's Connection override).
+ * How the extension connects: "auto" (default) is daemon mode when a daemon token is stored, else
+ * online mode when signed in to a relay, else hub mode; "hub" / "daemon" / "online" force a mode
+ * (the popup's Connection override). A local setup comes first so pages never start going to a
+ * relay without the user choosing it.
  */
-export type ModeSetting = "auto" | "hub" | "daemon";
-export type ConnectionMode = V2ConnectionMode;
+export type ModeSetting = "auto" | "hub" | "daemon" | "online";
+/** "online": the TabCrew Online relay (see online.ts); the others as in shared/v2. */
+export type ConnectionMode = V2ConnectionMode | "online";
 
 export function parseModeSetting(value: unknown): ModeSetting {
-  return value === "hub" || value === "daemon" ? value : "auto";
+  return value === "hub" || value === "daemon" || value === "online" ? value : "auto";
 }
 
-export function effectiveMode(setting: ModeSetting, token: string | null): ConnectionMode {
+export function effectiveMode(setting: ModeSetting, token: string | null, signedInOnline = false): ConnectionMode {
   if (setting !== "auto") return setting;
-  return token ? "daemon" : "hub";
+  if (token) return "daemon";
+  return signedInOnline ? "online" : "hub";
 }
 
 export async function saveModeSetting(setting: ModeSetting): Promise<void> {
@@ -286,6 +298,8 @@ export interface BridgeConfig {
   readonly modeSetting?: ModeSetting;
   /** Hub mode only: the TOFU pin (null until created). */
   readonly hubPin?: HubPin | null;
+  /** Online mode only: the relay socket URL and a fresh access token (null when signed out). */
+  readonly online?: { readonly url: string; readonly accessToken: string } | null;
 }
 
 /** A valid port, or the default port of `mode` (daemon mode when not given). */
@@ -295,35 +309,47 @@ export function parsePort(value: unknown, mode: ConnectionMode = "daemon"): numb
 }
 
 export async function loadConfig(): Promise<Required<BridgeConfig>> {
-  const stored = await chrome.storage.local.get([TOKEN_KEY, PORT_KEY, MODE_KEY, HUB_PIN_KEY]);
+  const stored = await chrome.storage.local.get([TOKEN_KEY, PORT_KEY, MODE_KEY, HUB_PIN_KEY, ONLINE_KEY]);
   const token = typeof stored[TOKEN_KEY] === "string" && stored[TOKEN_KEY].trim() ? stored[TOKEN_KEY].trim() : null;
   const modeSetting = parseModeSetting(stored[MODE_KEY]);
-  const mode = effectiveMode(modeSetting, token);
-  return { token, port: parsePort(stored[PORT_KEY], mode), mode, modeSetting, hubPin: parseHubPin(stored[HUB_PIN_KEY]) };
+  const mode = effectiveMode(modeSetting, token, signedIn(parseOnlineAccount(stored[ONLINE_KEY])));
+  // The access token is filled in by the service worker (it may need a refresh first).
+  return { token, port: parsePort(stored[PORT_KEY], mode), mode, modeSetting, hubPin: parseHubPin(stored[HUB_PIN_KEY]), online: null };
 }
 
 /**
  * Socket status of the bridge. `untrusted_hub`: hub mode, the hub failed the pin check or refused
  * ours (4403); no retries until the pin, mode or port changes.
  */
-export type BridgeStatus = "connected" | "connecting" | "needs_token" | "unauthorized" | "offline" | "untrusted_hub";
+export type BridgeStatus = "connected" | "connecting" | "needs_token" | "unauthorized" | "offline" | "untrusted_hub" | "signed_out";
 /** Legacy popup status (daemon-mode vocabulary): the socket status, or `not_paired` when there is no token and pairing failed. */
 export type PopupStatus = "connected" | "connecting" | "needs_token" | "unauthorized" | "offline" | "not_paired";
 /** Hub-mode statuses for the popup. */
 export type HubStatus = "connected" | "connecting" | "hub_not_running" | "untrusted_hub";
-/** Full popup connection status: daemon-mode statuses plus the hub-mode ones. */
-export type ConnectionStatus = PopupStatus | HubStatus;
+/** Online-mode statuses for the popup. */
+export type OnlineStatus = "connected" | "connecting" | "relay_offline" | "signed_out";
+/** Full popup connection status: daemon-mode statuses plus the hub- and online-mode ones. */
+export type ConnectionStatus = PopupStatus | HubStatus | OnlineStatus;
 
 /** The popup's connection status for `mode`, from the bridge status (or `not_paired`). */
 export function connectionStatus(mode: ConnectionMode, status: BridgeStatus | "not_paired"): ConnectionStatus {
   if (mode === "hub" && status === "offline") return "hub_not_running";
+  if (mode === "online") {
+    if (status === "offline") return "relay_offline";
+    // A refused token is refreshed by the service worker; it signs out only if that fails.
+    if (status === "unauthorized") return "connecting";
+    if (status === "signed_out" || status === "connected" || status === "connecting") return status;
+    return "relay_offline";
+  }
+  if (status === "signed_out") return "offline";
   return status;
 }
 
 /** `ConnectionStatus` folded into the legacy `PopupStatus` (for popups that only know daemon mode). */
 export function legacyPopupStatus(status: ConnectionStatus): PopupStatus {
-  if (status === "hub_not_running") return "offline";
+  if (status === "hub_not_running" || status === "relay_offline") return "offline";
   if (status === "untrusted_hub") return "unauthorized";
+  if (status === "signed_out") return "needs_token";
   return status;
 }
 
@@ -352,7 +378,14 @@ export type PopupRequest =
   | { type: "v2:rename_group"; group_id: number; name: string }
   | { type: "v2:create_group"; name: string }
   | { type: "v2:set_group_name"; name: string }
-  | { type: "v2:set_finish_mode"; mode: V2FinishMode };
+  | { type: "v2:set_finish_mode"; mode: V2FinishMode }
+  /** Online mode: sign in (launchWebAuthFlow from this user click), sign out. Answered with `PopupActionResult`. */
+  | { type: "v2:online_sign_in"; relay_url: string; browser_name: string }
+  | { type: "v2:online_sign_out" }
+  /** The relay URL and browser name as typed (validated at sign-in). */
+  | { type: "v2:online_prefs"; relay_url: string; browser_name: string }
+  /** Pause agents in this browser (every mode). Answered with `PopupActionResult`. */
+  | { type: "v2:set_paused"; paused: boolean };
 
 /** A TabCrew-managed group, as the popup lists it. */
 export interface PopupGroupInfo {
@@ -414,6 +447,16 @@ export interface PopupState {
   readonly group_name?: string;
   /** Shared groups: the default finish mode setting. */
   readonly finish_mode?: V2FinishMode;
+  /** Online mode account (never the tokens). */
+  readonly online?: {
+    readonly relay_url: string;
+    readonly browser_name: string;
+    readonly signed_in: boolean;
+    /** Why the last sign-in failed (shown when the popup reopens); null after a success. */
+    readonly error?: string | null;
+  };
+  /** Agents are paused in this browser. */
+  readonly paused?: boolean;
 }
 
 export type PopupStopResult = { ok: true } | { ok: false; error: string };

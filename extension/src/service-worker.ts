@@ -5,6 +5,9 @@
  * socket cannot stall request handling here.
  * Hub mode (auto without a daemon token, or the "hub" override): the pin lives in chrome.storage
  * here and is pushed to the offscreen bridge; model calls from the hub run here.
+ * Online mode (signed in to a TabCrew relay, see online.ts): the refresh token lives in
+ * chrome.storage here; the offscreen bridge only ever gets the relay URL and a short-lived access
+ * token. Model calls from the relay run here too.
  * All Chrome listeners are registered synchronously at top level (MV3 requirement).
  */
 
@@ -13,6 +16,8 @@ import { CdpManager } from "./cdp.js";
 import {
   HUB_PIN_KEY,
   MODE_KEY,
+  ONLINE_PREFS_KEY,
+  PAUSED_KEY,
   PORT_KEY,
   TOKEN_KEY,
   confirmHubPin,
@@ -38,17 +43,59 @@ import { Pairing } from "./pairing.js";
 import { BRIDGE_PORT_NAME } from "./relay-protocol.js";
 import { handleModelCall } from "./model/proxy.js";
 import { BridgeRelay } from "./relay.js";
+import {
+  DEFAULT_RELAY_URL,
+  ONLINE_KEY,
+  freshAccess,
+  parseOnlineAccount,
+  signIn,
+  signOut,
+  signedIn,
+  type OnlineAccount,
+  type OnlineDeps,
+} from "./online.js";
 import { PageController } from "./snapshot/controller.js";
 import { StoppedSessions } from "./stopped.js";
 import { TabManager } from "./tabs.js";
 
 const KEEPALIVE_ALARM = "v2-bridge-keepalive";
 
-/** The config for the offscreen bridge: in hub mode a pin always exists (created on first use). */
+const onlineDeps: OnlineDeps = {
+  fetch: (input, init) => fetch(input, init),
+  launchWebAuthFlow: (details) => chrome.identity.launchWebAuthFlow(details),
+  get redirectUrl() {
+    return chrome.identity.getRedirectURL("online");
+  },
+  load: async () => parseOnlineAccount((await chrome.storage.local.get(ONLINE_KEY))[ONLINE_KEY]),
+  save: (account: OnlineAccount | null) =>
+    account ? chrome.storage.local.set({ [ONLINE_KEY]: account }) : chrome.storage.local.remove(ONLINE_KEY),
+  now: () => Date.now(),
+};
+
+/**
+ * The config for the offscreen bridge: in hub mode a pin always exists (created on first use); in
+ * online mode a fresh access token (refreshed first if it is about to expire).
+ */
 async function loadBridgeConfig() {
   const config = await loadConfig();
   if (config.mode === "hub" && !config.hubPin) return { ...config, hubPin: await ensureHubPin() };
+  if (config.mode === "online") return { ...config, online: await freshAccess(onlineDeps) };
   return config;
+}
+
+/** The last sign-in failure, for the popup (it closes while the sign-in window is open). */
+let onlineError: string | null = null;
+
+async function onlinePrefs(): Promise<{ relay_url: string; browser_name: string }> {
+  const raw = (await chrome.storage.local.get(ONLINE_PREFS_KEY))[ONLINE_PREFS_KEY] as Record<string, unknown> | undefined;
+  return {
+    relay_url: typeof raw?.relay_url === "string" ? raw.relay_url.slice(0, 300) : "",
+    browser_name: typeof raw?.browser_name === "string" ? raw.browser_name.slice(0, 40) : "",
+  };
+}
+
+async function agentsPaused(): Promise<boolean> {
+  return (await chrome.storage.local.get(PAUSED_KEY))[PAUSED_KEY] === true;
 }
 
 const cdp = new CdpManager();
@@ -83,23 +130,35 @@ const bridge: BridgeRelay = new BridgeRelay({
     bridge.sendEvent({ type: "event", event: "groups", groups });
   },
   onStatus: (status) => {
-    // The daemon rejected the stored token: its token may have changed, so ask the host once.
-    if (status === "unauthorized") {
-      void loadConfig()
-        .then((config) => (config.mode === "daemon" ? pairing.repair(config.token) : false))
-        .catch(() => false);
-    }
+    if (status !== "unauthorized") return;
+    void loadConfig()
+      .then(async (config) => {
+        // The daemon rejected the stored token: its token may have changed, so ask the host once.
+        if (config.mode === "daemon") return pairing.repair(config.token);
+        // The relay refused the access token (expired, revoked): refresh once and reconnect. A
+        // rejected refresh forgets the tokens, and the push below then reports signed_out.
+        if (config.mode === "online") {
+          await freshAccess(onlineDeps, { force: true });
+          await bridge.pushConfig(true);
+        }
+        return false;
+      })
+      .catch(() => false);
   },
+  isPaused: agentsPaused,
   // Hub mode: the popup's model provider settings; the key never leaves the extension.
   handleModelCall,
   // Fires storage.onChanged, which re-pushes the (now confirmed) pin without forcing a reconnect.
   onHubPinStored: async (secret) => void (await confirmHubPin(secret)),
 });
 
-/** Pair if needed, then make sure the bridge is up. */
+/** Pair if needed, then make sure the bridge is up (online: keep the access token fresh too). */
 function ensureBridge(): void {
   void pairing.ensurePaired().catch(() => undefined);
   void bridge.ensure();
+  void loadConfig()
+    .then((config) => (config.mode === "online" ? freshAccess(onlineDeps) : null))
+    .catch(() => null);
 }
 
 chrome.tabs.onCreated.addListener((tab) => {
@@ -142,6 +201,12 @@ chrome.storage.onChanged.addListener((changes, area) => {
   } else if (HUB_PIN_KEY in changes) {
     // The offscreen bridge reconnects only if the secret changed ("Trust this hub"), not for a confirmation.
     void bridge.pushConfig(false);
+  } else if (ONLINE_KEY in changes) {
+    // Signing in or out (or another relay) reconnects; a rotated access token only updates the config.
+    const before = parseOnlineAccount(changes[ONLINE_KEY]?.oldValue);
+    const after = parseOnlineAccount(changes[ONLINE_KEY]?.newValue);
+    const reconnect = signedIn(before) !== signedIn(after) || before?.relay_url !== after?.relay_url;
+    void bridge.pushConfig(reconnect);
   }
 });
 
@@ -174,7 +239,10 @@ chrome.runtime.onMessage.addListener((message: PopupRequest, _sender, sendRespon
       tabs.popupGroups().catch(() => []),
       loadGroupName(),
       loadFinishMode(),
-    ]).then(([config, sessions, finished, groups, group_name, finish_mode]) => {
+      onlineDeps.load(),
+      agentsPaused(),
+      onlinePrefs(),
+    ]).then(([config, sessions, finished, groups, group_name, finish_mode, account, paused, prefs]) => {
       const unpaired = config.mode === "daemon" && config.token === null && pairing.lastError !== null;
       const connection = connectionStatus(config.mode, unpaired ? "not_paired" : bridge.status);
       const state: PopupState = {
@@ -192,6 +260,15 @@ chrome.runtime.onMessage.addListener((message: PopupRequest, _sender, sendRespon
         groups,
         group_name,
         finish_mode,
+        online: signedIn(account)
+          ? { relay_url: account!.relay_url, browser_name: account!.browser_name, signed_in: true, error: null }
+          : {
+              relay_url: prefs.relay_url || account?.relay_url || DEFAULT_RELAY_URL,
+              browser_name: prefs.browser_name || account?.browser_name || "",
+              signed_in: false,
+              error: onlineError,
+            },
+        paused,
       };
       sendResponse(state);
     });
@@ -222,6 +299,36 @@ chrome.runtime.onMessage.addListener((message: PopupRequest, _sender, sendRespon
   if (message?.type === "v2:trust_hub") {
     // Fires storage.onChanged: the offscreen bridge reconnects handing the new secret to the hub.
     void popupAction(async () => void (await resetHubPin())).then(sendResponse);
+    return true;
+  }
+  if (message?.type === "v2:online_sign_in") {
+    // Started by the popup's Sign in click; the auth window outlives the popup closing.
+    const relayUrl = String(message.relay_url ?? "").slice(0, 300);
+    const browserName = String(message.browser_name ?? "").slice(0, 40);
+    onlineError = null;
+    void chrome.storage.local.set({ [ONLINE_PREFS_KEY]: { relay_url: relayUrl, browser_name: browserName } });
+    void popupAction(async () => {
+      await signIn(onlineDeps, { relayUrl, browserName });
+    }).then((result) => {
+      onlineError = result.ok ? null : result.error;
+      sendResponse(result);
+    });
+    return true;
+  }
+  if (message?.type === "v2:online_prefs") {
+    void popupAction(() =>
+      chrome.storage.local.set({
+        [ONLINE_PREFS_KEY]: { relay_url: String(message.relay_url ?? "").slice(0, 300), browser_name: String(message.browser_name ?? "").slice(0, 40) },
+      }),
+    ).then(sendResponse);
+    return true;
+  }
+  if (message?.type === "v2:online_sign_out") {
+    void popupAction(() => signOut(onlineDeps)).then(sendResponse);
+    return true;
+  }
+  if (message?.type === "v2:set_paused") {
+    void popupAction(() => chrome.storage.local.set({ [PAUSED_KEY]: message.paused === true })).then(sendResponse);
     return true;
   }
   if (message?.type === "v2:stop") {

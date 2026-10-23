@@ -156,8 +156,8 @@ export function setupHint(state: PopupState): SetupHint | null {
 export type SettingsAccess = "ready" | "outdated" | "waiting" | "offline";
 
 export function settingsAccess(state: PopupState): SettingsAccess {
-  // A hub has no daemon settings (keys live in the popup's Model provider instead): never ask it.
-  if (state.mode === "hub") return "offline";
+  // A hub or relay has no daemon settings (keys live in the popup's Model provider instead): never ask it.
+  if (state.mode === "hub" || state.mode === "online") return "offline";
   if (state.status !== "connected") return "offline";
   if (!state.service) return "waiting";
   return state.service.settings ? "ready" : "outdated";
@@ -195,6 +195,8 @@ const STATUS_TEXT: Record<ConnectionStatus, string> = {
   offline: "offline",
   hub_not_running: "hub not running",
   untrusted_hub: "untrusted hub",
+  relay_offline: "relay offline",
+  signed_out: "signed out",
 };
 
 export interface ConnectionBadge {
@@ -226,6 +228,20 @@ export function connectionHint(state: PopupState): ConnectionHint | null {
     return hint ? { ...hint, trust: false } : null;
   }
   switch (state.connection) {
+    case "signed_out":
+      return {
+        text: "Sign in to TabCrew Online to connect this browser: Advanced → Connection → Sign in.",
+        command: null,
+        detail: null,
+        trust: false,
+      };
+    case "relay_offline":
+      return {
+        text: `Can't reach ${hostOf(state.online?.relay_url)}. TabCrew keeps retrying.`,
+        command: null,
+        detail: null,
+        trust: false,
+      };
     case "hub_not_running":
       return {
         text: "Start OpenCode — TabCrew starts with it.",
@@ -260,7 +276,10 @@ export function modeNote(state: PopupState): string {
       return "Hub: OpenCode starts TabCrew; model calls use the provider above.";
     case "daemon":
       return "Daemon: the TabCrew service from npx tabcrew setup.";
+    case "online":
+      return "Online: agents anywhere reach this browser through the TabCrew relay; model calls use the provider above.";
     default:
+      if (mode === "online") return "Auto: online mode (signed in, no daemon token saved).";
       return mode === "hub" ? "Auto: hub mode (no daemon token saved)." : "Auto: daemon mode (a daemon token is saved).";
   }
 }
@@ -623,4 +642,56 @@ export function actionNote(result: PopupActionResult, done: string): ActionNote 
   if (result.ok) return { text: done, tone: "ok" };
   const error = result.error.trim().replace(/\.$/, "");
   return { text: `${error.charAt(0).toUpperCase()}${error.slice(1)}.`, tone: "error" };
+}
+
+// ---------------------------------------------------------------------------
+// Online mode account box and Pause agents.
+// ---------------------------------------------------------------------------
+
+function hostOf(url: string | undefined): string {
+  try {
+    return url ? new URL(url).host : "the TabCrew relay";
+  } catch {
+    return "the TabCrew relay";
+  }
+}
+
+export interface OnlineView {
+  readonly signedIn: boolean;
+  readonly relayUrl: string;
+  readonly browserName: string;
+  readonly button: "Sign in" | "Sign out";
+  readonly note: string;
+}
+
+export function onlineView(state: PopupState): OnlineView {
+  const o = state.online ?? { relay_url: "https://tabcrew.huynle.com", browser_name: "", signed_in: false, error: null };
+  return o.signed_in
+    ? {
+        signedIn: true,
+        relayUrl: o.relay_url,
+        browserName: o.browser_name,
+        button: "Sign out",
+        note: `Signed in as browser "${o.browser_name}" at ${hostOf(o.relay_url)}. Agents you sign in there can use this browser.`,
+      }
+    : {
+        signedIn: false,
+        relayUrl: o.relay_url,
+        browserName: o.browser_name,
+        button: "Sign in",
+        note: o.error
+          ? `Sign-in failed: ${o.error}${/could not be loaded/i.test(o.error) ? ` Check the relay URL: is a TabCrew relay running at ${hostOf(o.relay_url)}?` : ""}`
+          : "Sign in with GitHub or Google. In Online mode the relay sees the pages agents work on (it never stores them).",
+      };
+}
+
+export interface PauseView {
+  readonly checked: boolean;
+  readonly note: string;
+}
+
+export function pauseView(state: PopupState): PauseView {
+  return state.paused
+    ? { checked: true, note: "Paused: agents are refused in this browser until you resume." }
+    : { checked: false, note: "" };
 }

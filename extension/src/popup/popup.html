@@ -28,6 +28,11 @@
       </p>
     </div>
 
+    <section id="pause-section">
+      <label class="radio"><input type="checkbox" id="paused" /> Pause agents in this browser</label>
+      <p id="paused-note" class="note"></p>
+    </section>
+
     <section>
       <fieldset id="placement">
         <legend>New agent tabs open in:</legend>
@@ -191,8 +196,19 @@
           <option value="auto">Auto</option>
           <option value="hub">Hub (OpenCode starts TabCrew)</option>
           <option value="daemon">Daemon (npx tabcrew setup)</option>
+          <option value="online">Online (TabCrew relay)</option>
         </select>
         <p id="mode-note" class="note"></p>
+        <div id="online-group" class="online-only" hidden>
+          <label for="relay-url">Relay</label>
+          <input id="relay-url" class="wide" type="url" autocomplete="off" spellcheck="false" placeholder="https://tabcrew.huynle.com" />
+          <label for="browser-name">This browser's name</label>
+          <input id="browser-name" class="wide" type="text" autocomplete="off" spellcheck="false" maxlength="40" placeholder="e.g. home-mac" />
+          <div class="row">
+            <button id="online-sign" title="Sign in to the relay with GitHub or Google">Sign in</button>
+          </div>
+          <p id="online-note" class="note"></p>
+        </div>
         <div class="daemon-only">
           <label for="token">Daemon token (set automatically by pairing)</label>
           <div class="row">
@@ -201,8 +217,8 @@
           </div>
           <p id="token-note" class="note"></p>
         </div>
-        <label for="port" id="port-label">Daemon port</label>
-        <div class="row">
+        <label for="port" id="port-label" class="local-only">Daemon port</label>
+        <div class="row local-only">
           <input id="port" type="number" min="1" max="65535" />
           <button id="save-port">Save</button>
         </div>

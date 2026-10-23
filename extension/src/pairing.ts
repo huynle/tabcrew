@@ -7,7 +7,7 @@
  * - The daemon rejected the stored token (4401) → ask the host once per rejected token; a different
  *   token means the daemon's token changed (e.g. reinstall), so it replaces the stored one.
  *
- * Connection mode (`v2:mode`): "daemon" pairs as above; "hub" never asks the host (hub mode has no
+ * Connection mode (`v2:mode`): "daemon" pairs as above; "hub" and "online" never ask the host (hub mode has no
  * token, and locked-down Chrome blocks native messaging); "auto" without a token is hub mode, so the
  * host is asked once per service-worker life (a successful pairing stores a token, which switches
  * auto to daemon mode) and not from the keepalive loop.
@@ -46,7 +46,7 @@ export class Pairing {
   async ensurePaired(): Promise<PairOutcome> {
     if (await this.deps.loadToken()) return "already_paired";
     const mode = (await this.deps.loadModeSetting?.()) ?? "daemon";
-    if (mode === "hub") return "skipped";
+    if (mode === "hub" || mode === "online") return "skipped";
     if (mode === "auto") {
       if (this.autoAttempted) return "skipped";
       this.autoAttempted = true;
@@ -60,7 +60,8 @@ export class Pairing {
    */
   async repair(rejectedToken: string | null): Promise<boolean> {
     if (rejectedToken === null || this.repairedFor === rejectedToken) return false;
-    if ((await this.deps.loadModeSetting?.()) === "hub") return false;
+    const mode = await this.deps.loadModeSetting?.();
+    if (mode === "hub" || mode === "online") return false;
     this.repairedFor = rejectedToken;
     return (await this.pair(rejectedToken)) === "paired";
   }

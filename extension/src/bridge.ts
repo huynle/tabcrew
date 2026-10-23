@@ -18,7 +18,14 @@
  *   config (pin, mode, port) changes. Reconnect backoff is capped at 3 s (hubs restart on demand).
  * - A later `welcome` on a verified socket is treated as a session refresh (`onWelcome` again).
  *
- * Both modes:
+ * Online mode (TabCrew Online relay, see online.ts):
+ * - Dials `config.online.url` (wss://<relay>/ext) and sends `hello` with the short-lived access token
+ *   and `features: ["model_call", "groups"]`; the relay checks the token and answers `welcome`.
+ * - No account → status `signed_out`, no connection. 4401 → `unauthorized` until a new token
+ *   arrives (the service worker refreshes it and reconfigures).
+ * - `model_call`s are handled as in hub mode (the user's own provider settings).
+ *
+ * All modes:
  * - Answers `ping` itself. `request` frames are handed to `onRequest` (the service-worker relay)
  *   without waiting: there is no queue here. Per-tab ordering is the daemon's job.
  * - A response (or model_result) is written only to the socket its request arrived on.
@@ -110,6 +117,8 @@ interface Connection {
   readonly key: string;
   readonly token: string | null;
   readonly secret: string | null;
+  /** Where the socket dials. */
+  readonly url: string;
   /** Hub mode: the pin sent in `hello` (set when the socket opens). */
   pin: V2HelloPin | null;
   /** Hub mode: "pending" until welcome, "verifying" while the proof is checked, "ok" once trusted. */
@@ -161,27 +170,42 @@ export class Bridge {
     if (gen !== this.generation) return;
     if (this.socket) return;
     let conn: Connection;
-    if (config.mode === "hub") {
+    if (config.mode === "online") {
+      if (!config.online) {
+        this.setStatus("signed_out");
+        return;
+      }
+      const { url, accessToken } = config.online;
+      conn = { mode: "online", key: `online|${url}|${accessToken}`, token: accessToken, secret: null, url, pin: null, auth: "ok" };
+    } else if (config.mode === "hub") {
       // The service worker creates the pin before pushing a hub config; without one there is nothing to send.
       if (!config.hubPin) {
         this.setStatus("offline");
         return;
       }
       const { secret } = config.hubPin;
-      conn = { mode: "hub", key: `hub|${secret}`, token: null, secret, pin: null, auth: "pending" };
+      conn = { mode: "hub", key: `hub|${secret}`, token: null, secret, url: `ws://127.0.0.1:${config.port}`, pin: null, auth: "pending" };
     } else {
       if (!config.token) {
         this.setStatus("needs_token");
         return;
       }
-      conn = { mode: "daemon", key: `daemon|${config.token}`, token: config.token, secret: null, pin: null, auth: "ok" };
+      conn = {
+        mode: "daemon",
+        key: `daemon|${config.token}`,
+        token: config.token,
+        secret: null,
+        url: `ws://127.0.0.1:${config.port}`,
+        pin: null,
+        auth: "ok",
+      };
     }
     if (this.blocked !== null && this.blocked.key === conn.key) {
       this.setStatus(this.blocked.status);
       return;
     }
     this.blocked = null;
-    this.open(conn, config.hubPin?.confirmed === true, config.port);
+    this.open(conn, config.hubPin?.confirmed === true);
   }
 
   /** Alarm/wake hook: reconnect if nothing is connected or pending. */
@@ -225,12 +249,12 @@ export class Bridge {
     return this.sendOn(this.socket, result);
   }
 
-  private open(conn: Connection, pinConfirmed: boolean, port: number): void {
+  private open(conn: Connection, pinConfirmed: boolean): void {
     // Hub mode: stay "offline" while retrying, so the popup shows a steady "hub not running".
-    if (conn.mode === "daemon" || this.attempts === 0) this.setStatus("connecting");
+    if (conn.mode !== "hub" || this.attempts === 0) this.setStatus("connecting");
     let socket: SocketLike;
     try {
-      socket = this.deps.createSocket(`ws://127.0.0.1:${port}`);
+      socket = this.deps.createSocket(conn.url);
     } catch (err) {
       console.warn("[v2 bridge] connect failed:", err);
       this.setStatus("offline");
@@ -274,6 +298,15 @@ export class Bridge {
   }
 
   private hello(conn: Connection, pinConfirmed: boolean): V2ExtensionFrame {
+    if (conn.mode === "online") {
+      return {
+        type: "hello",
+        protocol: V2_PROTOCOL_VERSION,
+        token: conn.token ?? "",
+        extension_version: this.deps.extensionVersion,
+        features: [V2_EXT_FEATURE_MODEL_CALL, V2_EXT_FEATURE_GROUPS],
+      };
+    }
     if (conn.mode === "daemon") {
       return {
         type: "hello",
@@ -338,8 +371,8 @@ export class Bridge {
         this.notify(() => this.deps.onRequest(frame));
         break;
       case "model_call":
-        if (conn.mode !== "hub") {
-          console.warn("[v2 bridge] ignoring model_call outside hub mode");
+        if (conn.mode === "daemon") {
+          console.warn("[v2 bridge] ignoring model_call in daemon mode");
           return;
         }
         this.handleModelCall(socket, frame);

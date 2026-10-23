@@ -75,7 +75,11 @@ export interface RelayDeps {
   handleModelCall?(call: V2ModelCall): Promise<ModelCallOutcome>;
   /** Hub mode: the hub stored this pin secret; mark the stored pin confirmed. */
   onHubPinStored?(secret: string): Promise<void> | void;
+  /** "Pause agents": while true every request and model call is refused without touching any tab. */
+  isPaused?(): Promise<boolean> | boolean;
 }
+
+export const PAUSED_MESSAGE = "the user paused agents in this browser (TabCrew popup); ask the user before continuing";
 
 export class BridgeRelay {
   private port: PortLike | null = null;
@@ -144,6 +148,10 @@ export class BridgeRelay {
     const config = await this.deps.loadConfig();
     if (config.mode === "hub") {
       this.post({ type: "config", token: null, port: config.port, reconfigure, mode: "hub", hub_pin: config.hubPin ?? null });
+    } else if (config.mode === "online") {
+      // Never the daemon token: only the relay URL and a short-lived access token.
+      const online = config.online ? { url: config.online.url, access_token: config.online.accessToken } : null;
+      this.post({ type: "config", token: null, port: 0, reconfigure, mode: "online", online });
     } else {
       this.post({ type: "config", token: config.token, port: config.port, reconfigure });
     }
@@ -256,6 +264,8 @@ export class BridgeRelay {
         ok: false,
         error: { code: "invalid_args", message: "request needs op and session.short_id" },
       };
+    } else if (await this.paused()) {
+      response = { type: "response", id: req.id, ok: false, error: { code: "stopped_by_user", message: PAUSED_MESSAGE } };
     } else {
       try {
         const result = await this.deps.handleRequest(req);
@@ -274,6 +284,10 @@ export class BridgeRelay {
       return;
     }
     let result: V2ModelResult;
+    if (await this.paused()) {
+      this.post({ type: "model_result", result: { type: "model_result", id: call.id, ok: false, error: { code: "stopped_by_user", message: PAUSED_MESSAGE } } });
+      return;
+    }
     try {
       const outcome = await (this.deps.handleModelCall ?? modelNotConfigured)(call);
       result = v2ParseModelResult({ ...outcome, type: "model_result", id: call.id }) ?? {
@@ -287,6 +301,15 @@ export class BridgeRelay {
       result = { type: "model_result", id: call.id, ok: false, error: { code: "model_error", message } };
     }
     this.post({ type: "model_result", result });
+  }
+
+  private async paused(): Promise<boolean> {
+    try {
+      return (await this.deps.isPaused?.()) === true;
+    } catch {
+      // Fail closed: if the setting can't be read, treat agents as paused.
+      return true;
+    }
   }
 
   private post(message: ToOffscreen): boolean {

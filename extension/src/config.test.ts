@@ -1,3 +1,4 @@
+import { ONLINE_KEY } from "./online.js";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   FINISH_MODE_KEY,
@@ -91,12 +92,12 @@ describe("connection mode", () => {
 
 describe("loadConfig", () => {
   it("defaults to hub mode on port 8775 without a token", async () => {
-    expect(await loadConfig()).toEqual({ token: null, port: 8775, mode: "hub", modeSetting: "auto", hubPin: null });
+    expect(await loadConfig()).toEqual({ token: null, port: 8775, mode: "hub", modeSetting: "auto", hubPin: null, online: null });
   });
 
   it("is daemon mode on port 8771 with a stored token", async () => {
     await fake.chrome.storage.local.set({ [TOKEN_KEY]: " tok " });
-    expect(await loadConfig()).toEqual({ token: "tok", port: 8771, mode: "daemon", modeSetting: "auto", hubPin: null });
+    expect(await loadConfig()).toEqual({ token: "tok", port: 8771, mode: "daemon", modeSetting: "auto", hubPin: null, online: null });
   });
 
   it("honours the mode override, the stored port and a valid stored pin", async () => {
@@ -112,7 +113,57 @@ describe("loadConfig", () => {
       mode: "hub",
       modeSetting: "hub",
       hubPin: { secret: SECRET, confirmed: true },
+      online: null,
     });
+  });
+
+  const ACCOUNT = {
+    relay_url: "https://tabcrew.huynle.com",
+    browser_name: "home",
+    browser_id: "b_1",
+    refresh_token: "tcr_x",
+    access_token: "tca.x",
+    access_expires_at: 1,
+  };
+
+  it("auto is online mode when signed in and no daemon token is saved", async () => {
+    await fake.chrome.storage.local.set({ [ONLINE_KEY]: ACCOUNT });
+    expect((await loadConfig()).mode).toBe("online");
+  });
+
+  it("auto prefers the local daemon over a relay sign-in", async () => {
+    await fake.chrome.storage.local.set({ [ONLINE_KEY]: ACCOUNT, [TOKEN_KEY]: "tok" });
+    expect((await loadConfig()).mode).toBe("daemon");
+  });
+
+  it("a signed-out account does not make auto online", async () => {
+    await fake.chrome.storage.local.set({ [ONLINE_KEY]: { ...ACCOUNT, refresh_token: null } });
+    expect((await loadConfig()).mode).toBe("hub");
+  });
+
+  it("never hands the stored tokens to the bridge config (the service worker adds a fresh access token)", async () => {
+    await fake.chrome.storage.local.set({ [ONLINE_KEY]: ACCOUNT, [MODE_KEY]: "online" });
+    const config = await loadConfig();
+    expect(config).toMatchObject({ mode: "online", modeSetting: "online", online: null });
+    expect(JSON.stringify(config)).not.toContain("tcr_x");
+  });
+});
+
+describe("online statuses", () => {
+  it("maps bridge statuses for the popup", () => {
+    expect(connectionStatus("online", "offline")).toBe("relay_offline");
+    expect(connectionStatus("online", "signed_out")).toBe("signed_out");
+    expect(connectionStatus("online", "unauthorized")).toBe("connecting");
+    expect(connectionStatus("online", "connected")).toBe("connected");
+    expect(legacyPopupStatus("relay_offline")).toBe("offline");
+    expect(legacyPopupStatus("signed_out")).toBe("needs_token");
+  });
+
+  it("parses and resolves the online setting", () => {
+    expect(parseModeSetting("online")).toBe("online");
+    expect(effectiveMode("auto", null, true)).toBe("online");
+    expect(effectiveMode("auto", "t", true)).toBe("daemon");
+    expect(effectiveMode("online", "t", false)).toBe("online");
   });
 });
 

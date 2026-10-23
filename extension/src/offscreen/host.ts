@@ -143,11 +143,15 @@ export class OffscreenHost {
       return;
     }
     // A pin that only became confirmed keeps the connection; the next hello challenges the hub.
+    // A refreshed online access token keeps the connection too (it is only checked at hello);
+    // the next reconnect uses it.
     const changed =
       previous.token !== config.token ||
       previous.port !== config.port ||
       previous.mode !== config.mode ||
-      previous.hubPin?.secret !== config.hubPin?.secret;
+      previous.hubPin?.secret !== config.hubPin?.secret ||
+      previous.online?.url !== config.online?.url ||
+      !previous.online !== !config.online;
     if (reconfigure || changed) {
       void this.bridge.reconfigure();
     } else {
@@ -183,6 +187,11 @@ export class OffscreenHost {
 }
 
 function configFrom(message: Extract<ToOffscreen, { type: "config" }>): BridgeConfig {
+  if (message.mode === "online") {
+    const o = message.online;
+    const online = o && typeof o.url === "string" && typeof o.access_token === "string" ? { url: o.url, accessToken: o.access_token } : null;
+    return { token: null, port: 0, mode: "online", online };
+  }
   if (message.mode !== "hub") return { token: message.token, port: message.port, mode: "daemon" };
   return { token: null, port: message.port, mode: "hub", hubPin: parseHubPin(message.hub_pin) };
 }

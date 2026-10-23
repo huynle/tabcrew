@@ -37,6 +37,8 @@ import {
   collectLabel,
   connectionBadge,
   connectionHint,
+  onlineView,
+  pauseView,
   finishedRows,
   groupRows,
   groupsSectionVisible,
@@ -99,6 +101,7 @@ async function refresh(): Promise<void> {
   status.className = badge.className;
   $<HTMLParagraphElement>("token-note").textContent = state.token_set ? "Token saved." : "No token saved.";
   renderMode(state);
+  renderOnline(state);
   const hint = connectionHint(state);
   $("setup-hint").hidden = hint === null;
   if (hint) {
@@ -258,9 +261,75 @@ function renderMode(state: PopupState): void {
   mode = next;
   modeKnown = true;
   document.querySelectorAll<HTMLElement>(".daemon-only").forEach((el) => (el.hidden = mode !== "daemon"));
-  document.querySelectorAll<HTMLElement>(".hub-only").forEach((el) => (el.hidden = mode !== "hub"));
-  if (mode === "hub") void loadProvider(first);
+  // The model provider serves hub and online mode (model calls go through this extension in both).
+  document.querySelectorAll<HTMLElement>(".hub-only").forEach((el) => (el.hidden = mode === "daemon"));
+  document.querySelectorAll<HTMLElement>(".local-only").forEach((el) => (el.hidden = mode === "online"));
+  if (mode !== "daemon") void loadProvider(first);
 }
+
+/** The Online account box shows while Online is chosen or in use. */
+function renderOnline(state: PopupState): void {
+  const view = onlineView(state);
+  $("online-group").hidden = !(state.mode_setting === "online" || popupMode(state) === "online");
+  const relay = $<HTMLInputElement>("relay-url");
+  const name = $<HTMLInputElement>("browser-name");
+  if (document.activeElement !== relay && !onlineEdited) relay.value = view.relayUrl;
+  if (document.activeElement !== name && !onlineEdited) name.value = view.browserName;
+  if (!onlineEdited && state.online?.error) $("online-note").textContent = view.note;
+  relay.disabled = view.signedIn;
+  name.disabled = view.signedIn;
+  $("online-sign").textContent = view.button;
+  if (!onlineBusy) $("online-note").textContent = view.note;
+  onlineSignedIn = view.signedIn;
+  const pause = pauseView(state);
+  const box = $<HTMLInputElement>("paused");
+  if (document.activeElement !== box) box.checked = pause.checked;
+  $("paused-note").textContent = pause.note;
+}
+
+let onlineSignedIn = false;
+let onlineBusy = false;
+let onlineEdited = false;
+// Saved as typed: the popup closes when the sign-in window opens (or on any click outside it).
+let prefsTimer: ReturnType<typeof setTimeout> | null = null;
+function saveOnlinePrefs(): void {
+  onlineEdited = true;
+  if (prefsTimer) clearTimeout(prefsTimer);
+  prefsTimer = setTimeout(() => {
+    prefsTimer = null;
+    void send<PopupActionResult>({
+      type: "v2:online_prefs",
+      relay_url: $<HTMLInputElement>("relay-url").value,
+      browser_name: $<HTMLInputElement>("browser-name").value,
+    })
+      .then(() => (onlineEdited = false))
+      .catch(() => undefined);
+  }, 250);
+}
+$("relay-url").addEventListener("input", saveOnlinePrefs);
+$("browser-name").addEventListener("input", saveOnlinePrefs);
+
+$("online-sign").addEventListener("click", async () => {
+  const button = $<HTMLButtonElement>("online-sign");
+  button.disabled = true;
+  onlineBusy = true;
+  const signingIn = !onlineSignedIn;
+  $("online-note").textContent = signingIn ? "Opening the sign-in window…" : "Signing out…";
+  const request: PopupRequest = signingIn
+    ? { type: "v2:online_sign_in", relay_url: $<HTMLInputElement>("relay-url").value, browser_name: $<HTMLInputElement>("browser-name").value }
+    : { type: "v2:online_sign_out" };
+  const result = await send<PopupActionResult>(request).catch((): PopupActionResult => ({ ok: false, error: "extension not responding" }));
+  onlineBusy = false;
+  onlineEdited = false;
+  button.disabled = false;
+  if (!result.ok) $("online-note").textContent = `Failed: ${result.error}`;
+  void refresh();
+});
+
+$<HTMLInputElement>("paused").addEventListener("change", async (e) => {
+  await send<PopupActionResult>({ type: "v2:set_paused", paused: (e.target as HTMLInputElement).checked }).catch(() => undefined);
+  void refresh();
+});
 
 $<HTMLSelectElement>("mode").addEventListener("change", async (e) => {
   await saveModeSetting(parseModeSetting((e.target as HTMLSelectElement).value));

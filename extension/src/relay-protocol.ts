@@ -47,6 +47,8 @@ export type ToOffscreen =
       readonly mode?: ConnectionMode;
       /** Hub mode: the TOFU pin. */
       readonly hub_pin?: HubPin | null;
+      /** Online mode: the relay socket URL and a fresh access token (null when signed out). */
+      readonly online?: { readonly url: string; readonly access_token: string } | null;
     }
   | { readonly type: "frame"; readonly frame: V2Response | V2Event }
   /** A popup request for the daemon (settings). Never stored; answered with `ext_response`. */

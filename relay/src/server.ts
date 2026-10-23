@@ -89,6 +89,23 @@ export async function startRelay(o: RelayOptions): Promise<RunningRelay> {
       await handleMcp(req, res);
       return;
     }
+    if (url.pathname === "/token") {
+      // The extension's service worker calls /token from its chrome-extension:// origin; no other
+      // origin (web pages) may read token replies.
+      const origin = req.headers.origin;
+      if (origin !== undefined) {
+        if (!isTabcrewExtensionOrigin(origin, extensionOrigins)) {
+          sendJson(res, 403, { error: "invalid_request", error_description: "origin not allowed" });
+          return;
+        }
+        res.setHeader("access-control-allow-origin", origin);
+        res.setHeader("vary", "Origin");
+        if (req.method === "OPTIONS") {
+          res.writeHead(204, { "access-control-allow-methods": "POST", "access-control-allow-headers": "content-type", "access-control-max-age": "600" }).end();
+          return;
+        }
+      }
+    }
     if (await auth!.handle(req, res, url)) return;
     sendJson(res, 404, { error: "not_found" });
   }
