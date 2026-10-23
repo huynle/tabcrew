@@ -5,8 +5,10 @@ import {
   parseModeSetting,
   saveModeSetting,
   type ConnectionMode,
+  type Placement,
   type PopupActionResult,
   type PopupCloseResult,
+  type PopupGroupInfo,
   type PopupRequest,
   type PopupSettingsResult,
   type PopupState,
@@ -28,11 +30,16 @@ import { DRAFT_RESTORED, clearProviderDraft, draftDiffers, loadProviderDraft, sa
 import { bindPlacementRadios } from "./placement.js";
 import {
   CUSTOM_MODEL,
+  actionNote,
   buildProvider,
   chatModelIds,
+  checkGroupName,
+  collectLabel,
   connectionBadge,
   connectionHint,
   finishedRows,
+  groupRows,
+  groupsSectionVisible,
   keyStatus,
   modeNote,
   modelField,
@@ -47,9 +54,11 @@ import {
   providerFormFrom,
   providerKeyStatus,
   removeKeyPrompt,
+  renameTarget,
   sessionRows,
   settingPatch,
   settingsAccess,
+  type GroupRow,
   type HeaderRow,
   type ModelSlot,
   type ModelsLoad,
@@ -77,8 +86,12 @@ function send<T>(msg: PopupRequest): Promise<T> {
   return chrome.runtime.sendMessage(msg) as Promise<T>;
 }
 
+function getState(): Promise<PopupState | null> {
+  return send<PopupState>({ type: "v2:get_state" }).catch(() => null);
+}
+
 async function refresh(): Promise<void> {
-  const state = await send<PopupState>({ type: "v2:get_state" }).catch(() => null);
+  const state = await getState();
   if (!state) return;
   const badge = connectionBadge(state);
   const status = $("status");
@@ -154,6 +167,7 @@ async function refresh(): Promise<void> {
     li.append(name, actions);
     flist.append(li);
   }
+  renderGroups(state);
 }
 
 async function showSession(shortId: string): Promise<void> {
@@ -613,7 +627,195 @@ $("save-provider").addEventListener("click", async () => {
   });
 }
 
-void bindPlacementRadios(Array.from(document.querySelectorAll<HTMLInputElement>('input[name="placement"]')));
+// ---------------------------------------------------------------------------
+// Placement, shared tab groups and the finish behaviour. Every action re-reads the state (group
+// ids of name-only entries shift); the list is not rebuilt while a rename is open, and the
+// default name input is not overwritten while the user edits it.
+// ---------------------------------------------------------------------------
+
+let placement: Placement = "shared_window";
+let groups: readonly PopupGroupInfo[] | undefined;
+let groupName: string | undefined;
+/** The group being renamed (its id and name when Rename was clicked), or null. */
+let editing: { readonly group_id: number; readonly name: string } | null = null;
+let groupsKey = "";
+let groupNameDirty = false;
+let finishSaving = false;
+
+void bindPlacementRadios(Array.from(document.querySelectorAll<HTMLInputElement>('input[name="placement"]')), (next) => {
+  placement = next;
+  void refresh();
+}).then((stored) => {
+  placement = stored;
+  void refresh();
+});
+
+function renderGroups(state: PopupState): void {
+  groups = state.groups;
+  groupName = state.group_name;
+  $("groups-section").hidden = !groupsSectionVisible(placement, groups);
+  $("finish-section").hidden = groups === undefined;
+  const input = $<HTMLInputElement>("group-name");
+  if (document.activeElement !== input && !groupNameDirty) input.value = groupName ?? "";
+  $("finish-collect-label").textContent = collectLabel(groupName);
+  if (!finishSaving) {
+    const mode = state.finish_mode ?? "keep";
+    document.querySelectorAll<HTMLInputElement>('input[name="finish-mode"]').forEach((r) => (r.checked = r.value === mode));
+  }
+  renderGroupList();
+}
+
+function renderGroupList(force = false): void {
+  if (editing !== null && !force) return;
+  const rows = groupRows(groups);
+  const key = JSON.stringify(rows);
+  if (key === groupsKey && !force) return;
+  groupsKey = key;
+  const list = $<HTMLUListElement>("groups");
+  list.replaceChildren(...rows.map((row) => (editing?.group_id === row.group_id ? editRow(row) : groupRow(row))));
+}
+
+function groupRow(row: GroupRow): HTMLLIElement {
+  const li = document.createElement("li");
+  if (row.pending) li.className = "pending";
+  const name = document.createElement("span");
+  name.textContent = row.name;
+  if (row.is_default) {
+    const badge = document.createElement("span");
+    badge.className = "badge";
+    badge.textContent = "default";
+    name.append(badge);
+  }
+  const meta = document.createElement("span");
+  meta.className = "meta";
+  meta.textContent = ` ${row.meta}`;
+  name.append(meta);
+  const actions = document.createElement("span");
+  actions.className = "actions";
+  actions.append(button("Rename", () => startRename(row), { title: "Rename this TabCrew group" }));
+  li.append(name, actions);
+  return li;
+}
+
+function editRow(row: GroupRow): HTMLLIElement {
+  const li = document.createElement("li");
+  li.className = "editing";
+  const field = document.createElement("div");
+  field.className = "row";
+  const input = document.createElement("input");
+  input.type = "text";
+  input.value = row.name;
+  input.spellcheck = false;
+  input.autocomplete = "off";
+  input.setAttribute("aria-label", `New name for ${row.name}`);
+  const problem = document.createElement("p");
+  problem.className = "note";
+  const save = () => void saveRename(input, problem);
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") save();
+    if (e.key === "Escape") {
+      e.preventDefault();
+      stopRename();
+    }
+  });
+  field.append(input, button("Save", save), button("Cancel", () => stopRename()));
+  li.append(field, problem);
+  queueMicrotask(() => {
+    input.focus();
+    input.select();
+  });
+  return li;
+}
+
+function startRename(row: GroupRow): void {
+  editing = { group_id: row.group_id, name: row.name };
+  note("groups-note", "");
+  renderGroupList(true);
+}
+
+function stopRename(): void {
+  editing = null;
+  renderGroupList(true);
+}
+
+function setNote(el: HTMLElement, text: string, tone: "" | "error" | "ok" = ""): void {
+  el.textContent = text;
+  el.className = tone ? `note ${tone}` : "note";
+}
+
+async function saveRename(input: HTMLInputElement, problem: HTMLParagraphElement): Promise<void> {
+  const edit = editing;
+  if (!edit) return;
+  const fresh = await getState();
+  const target = renameTarget(fresh?.groups, edit);
+  if (target === null) return setNote(problem, "This group is gone. Cancel and try again.", "error");
+  const check = checkGroupName(input.value, fresh?.groups, target);
+  if (!check.ok) return setNote(problem, check.error, "error");
+  const current = fresh?.groups?.find((g) => g.group_id === target)?.name;
+  if (check.name !== current) {
+    const result = await send<PopupActionResult>({ type: "v2:rename_group", group_id: target, name: check.name }).catch(
+      (): PopupActionResult => ({ ok: false, error: "extension not responding" }),
+    );
+    if (!result.ok) return setNote(problem, actionNote(result, "").text, "error");
+    note("groups-note", `Renamed "${current ?? edit.name}" to "${check.name}".`, "ok");
+  }
+  editing = null;
+  await refresh();
+  renderGroupList(true);
+}
+
+$<HTMLInputElement>("group-name").addEventListener("input", () => (groupNameDirty = true));
+$<HTMLInputElement>("group-name").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") $("save-group-name").click();
+});
+
+$("save-group-name").addEventListener("click", async () => {
+  const check = checkGroupName($<HTMLInputElement>("group-name").value);
+  if (!check.ok) return note("group-name-note", check.error, "error");
+  if (check.name === groupName) {
+    groupNameDirty = false;
+    return note("group-name-note", "No changes.");
+  }
+  const result = await send<PopupActionResult>({ type: "v2:set_group_name", name: check.name }).catch(
+    (): PopupActionResult => ({ ok: false, error: "extension not responding" }),
+  );
+  const shown = actionNote(result, `Saved. New sessions join "${check.name}".`);
+  note("group-name-note", shown.text, shown.tone);
+  if (result.ok) groupNameDirty = false;
+  await refresh();
+});
+
+$<HTMLInputElement>("new-group").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") $("create-group").click();
+});
+
+$("create-group").addEventListener("click", async () => {
+  const input = $<HTMLInputElement>("new-group");
+  const check = checkGroupName(input.value, groups);
+  if (!check.ok) return note("new-group-note", check.error, "error");
+  const result = await send<PopupActionResult>({ type: "v2:create_group", name: check.name }).catch(
+    (): PopupActionResult => ({ ok: false, error: "extension not responding" }),
+  );
+  const shown = actionNote(result, `Created "${check.name}". It appears in Chrome when an agent uses it.`);
+  note("new-group-note", shown.text, shown.tone);
+  if (result.ok) input.value = "";
+  await refresh();
+});
+
+document.querySelectorAll<HTMLInputElement>('input[name="finish-mode"]').forEach((radio) =>
+  radio.addEventListener("change", async () => {
+    if (!radio.checked) return;
+    finishSaving = true;
+    const mode = radio.value === "close" || radio.value === "collect" ? radio.value : "keep";
+    const result = await send<PopupActionResult>({ type: "v2:set_finish_mode", mode }).catch(
+      (): PopupActionResult => ({ ok: false, error: "extension not responding" }),
+    );
+    finishSaving = false;
+    const shown = actionNote(result, "Saved. Applies to the next agent that finishes.");
+    note("finish-note", shown.text, shown.tone);
+    await refresh();
+  }),
+);
 
 $("stop-all").addEventListener("click", () => void stopSession(null));
 $("close-all-finished").addEventListener("click", () => void closeFinished(null));

@@ -22,9 +22,62 @@ function tag(id: string): string {
 describe("popup.html / popup.ts wiring", () => {
   it("has every element popup.ts looks up by id", () => {
     const ids = new Set([...ts.matchAll(/\$(?:<[A-Za-z]+>)?\("([a-z0-9-]+)"\)/g)].map((m) => m[1]));
+    for (const m of ts.matchAll(/\bnote\("([a-z0-9-]+)"/g)) ids.add(m[1]);
     for (const id of ['"provider-base-url"', '"provider-key"', '"provider-decision-model"', '"provider-text-model"']) ids.add(id.slice(1, -1));
     expect(ids.size).toBeGreaterThan(30);
+    for (const id of ["groups-section", "group-name", "groups", "groups-note", "new-group-note", "finish-section", "finish-note"]) expect(ids, id).toContain(id);
     for (const id of ids) expect(html, id).toContain(`id="${id}"`);
+  });
+
+  it("has the Tab groups section (hidden until the state arrives): default name, group list, new group", () => {
+    expect(tag("groups-section")).toMatch(/^<section\b[^>]*\bhidden\b/);
+    const section = html.slice(html.indexOf('id="groups-section"'), html.indexOf("</section>", html.indexOf('id="groups-section"')));
+    expect(section).toContain("<h2>Tab groups</h2>");
+    for (const id of ["group-name", "new-group"]) expect(tag(id)).toMatch(/^<input\b[^>]*type="text"/);
+    for (const id of ["save-group-name", "create-group"]) expect(tag(id)).toMatch(/^<button\b/);
+    expect(tag("groups")).toMatch(/^<ul\b/);
+    // Each control's message line sits right after it.
+    for (const [control, noteId] of [["save-group-name", "group-name-note"], ["create-group", "new-group-note"]]) {
+      const between = section.slice(section.indexOf(`id="${control}"`), section.indexOf(`<p id="${noteId}"`));
+      expect(between.length, control).toBeGreaterThan(0);
+      expect(between, control).not.toMatch(/<(label|input|p)\b/);
+    }
+    expect(section).toContain("it appears when an agent uses it (session_open with group");
+  });
+
+  it("has the finish radios: keep (checked), close, collect in the ✓ group, and the per-call override note", () => {
+    expect(tag("finish-section")).toMatch(/^<section\b[^>]*\bhidden\b/);
+    expect(html).toMatch(/<input type="radio" name="finish-mode" value="keep" checked \/> Keep tabs in the group \(default\)/);
+    expect(html).toMatch(/<input type="radio" name="finish-mode" value="close" \/> Close tabs/);
+    expect(html).toMatch(/<input type="radio" name="finish-mode" value="collect" \/> <span id="finish-collect-label">Collect in "✓ TabCrew"<\/span>/);
+    expect(html).toContain("An agent can override this per call (session_close with tabs: keep, close or collect).");
+    expect(ts).toContain('$("finish-collect-label").textContent = collectLabel(groupName)');
+    expect(ts).toContain('type: "v2:set_finish_mode", mode');
+  });
+
+  it("re-reads the state after every group action and shows problems next to the control", () => {
+    for (const [id, noteId, request] of [
+      ["save-group-name", "group-name-note", "v2:set_group_name"],
+      ["create-group", "new-group-note", "v2:create_group"],
+    ]) {
+      const body = clickHandler(id);
+      expect(body, id).toContain(`type: "${request}"`);
+      expect(body, id).toContain("checkGroupName(");
+      expect(body, id).toMatch(new RegExp(`note\\("${noteId}", check\\.error, "error"\\)`));
+      expect(body, id).toMatch(new RegExp(`note\\("${noteId}", shown\\.text, shown\\.tone\\)`));
+      expect(body.indexOf("await refresh()"), id).toBeGreaterThan(body.indexOf(`type: "${request}"`));
+    }
+    const finish = ts.slice(ts.indexOf('input[name="finish-mode"]\').forEach((radio)'));
+    expect(finish.slice(0, finish.indexOf("\n);\n"))).toContain("await refresh()");
+    const rename = ts.slice(ts.indexOf("async function saveRename("), ts.indexOf("\n}\n", ts.indexOf("async function saveRename(")));
+    // Fresh state first (name-only entries' ids shift), then the request, then a re-read.
+    const order = ["getState()", "renameTarget(", "checkGroupName(", 'type: "v2:rename_group"', "await refresh()"].map((s) => rename.indexOf(s));
+    expect(order.every((at) => at > -1)).toBe(true);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+    expect(rename).toContain("setNote(problem, ");
+    const edit = ts.slice(ts.indexOf("function editRow("), ts.indexOf("\n}\n", ts.indexOf("function editRow(")));
+    expect(edit).toContain('e.key === "Enter"');
+    expect(edit).toContain('e.key === "Escape"');
   });
 
   it("marks the daemon-only groups and keeps the provider hidden until hub mode", () => {

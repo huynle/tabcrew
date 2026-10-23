@@ -1,5 +1,23 @@
-import type { V2KeyView, V2ValueView } from "@tabcrew/shared/v2";
-import { defaultPort, parsePort, type ConnectionMode, type ConnectionStatus, type PopupFinishedInfo, type PopupSessionInfo, type PopupState } from "../config.js";
+import {
+  V2_GROUP_NAME_MAX_LENGTH,
+  v2CollectGroupTitle,
+  v2NormaliseGroupName,
+  v2ParseGroupTitle,
+  type V2KeyView,
+  type V2ValueView,
+} from "@tabcrew/shared/v2";
+import {
+  defaultPort,
+  parsePort,
+  type ConnectionMode,
+  type ConnectionStatus,
+  type Placement,
+  type PopupActionResult,
+  type PopupFinishedInfo,
+  type PopupGroupInfo,
+  type PopupSessionInfo,
+  type PopupState,
+} from "../config.js";
 import type { ModelList, ProbeInput, ProbeResult } from "../model/probe.js";
 import { PROVIDER_PRESETS, keyHint, normalizeBaseUrl, presetFor, validateHeaders, type PresetId, type ProviderSettings } from "../model/settings.js";
 import { NOT_PAIRED_TEXT } from "../pairing.js";
@@ -515,4 +533,94 @@ export function modelsStatus(load: ModelsLoad, baseUrl: string, preselected: boo
   if (count === 0) return { text: `${host} listed no chat models. Choose Custom… and type the model id.`, tone: "warn" };
   const picked = preselected ? " · recommended models picked, click Save to use them" : "";
   return { text: `✓ ${modelCount(count)} from ${host}${picked}`, tone: "ok" };
+}
+
+// ---------------------------------------------------------------------------
+// Shared tab groups: the TabCrew groups list (rename / create), the default group name and the
+// default finish behaviour. Names follow `v2NormaliseGroupName`; the service worker re-checks.
+// ---------------------------------------------------------------------------
+
+export type GroupNameCheck = { readonly ok: true; readonly name: string } | { readonly ok: false; readonly error: string };
+
+/**
+ * The normalised group name, or why it is refused. With `groups`, a name another TabCrew group
+ * already has is refused too (`self`: the id of the group being renamed).
+ */
+export function checkGroupName(raw: string, groups: readonly PopupGroupInfo[] = [], self?: number): GroupNameCheck {
+  const name = v2NormaliseGroupName(raw);
+  if (name === null) return { ok: false, error: groupNameProblem(raw) };
+  if (groups.some((g) => g.group_id !== self && g.name === name)) {
+    return { ok: false, error: `A TabCrew group named "${name}" already exists.` };
+  }
+  return { ok: true, name };
+}
+
+function groupNameProblem(raw: string): string {
+  const name = raw.replace(/\s+/g, " ").trim();
+  if (!name) return "Enter a group name.";
+  if ([...name].length > V2_GROUP_NAME_MAX_LENGTH) return `Use at most ${V2_GROUP_NAME_MAX_LENGTH} characters.`;
+  if (/\p{Cc}/u.test(name)) return "Remove control characters from the name.";
+  if (name.startsWith("✓ ")) return 'Names can\'t start with "✓ " (used for finished tabs).';
+  if (v2ParseGroupTitle(name)) return 'Names like "<label> · <8 characters>" are used for per-session groups.';
+  return "Not a valid group name.";
+}
+
+export interface GroupRow {
+  readonly group_id: number;
+  readonly name: string;
+  readonly is_default: boolean;
+  /** A name without a Chrome group yet (negative id): it appears when a session joins it. */
+  readonly pending: boolean;
+  /** e.g. "2 agents · 3 finished tabs" */
+  readonly meta: string;
+}
+
+function counted(n: number, one: string, many: string): string {
+  return n === 0 ? `no ${many}` : `${n} ${n === 1 ? one : many}`;
+}
+
+export function groupRows(groups: readonly PopupGroupInfo[] | undefined): GroupRow[] {
+  return (groups ?? []).map((g) => {
+    const pending = g.group_id < 0;
+    const meta = pending
+      ? "appears in Chrome when an agent uses it"
+      : `${counted(g.active_sessions, "agent", "agents")} · ${counted(g.finished_tabs, "finished tab", "finished tabs")}`;
+    return { group_id: g.group_id, name: g.name, is_default: g.is_default, pending, meta };
+  });
+}
+
+/**
+ * The Tab groups section: shown for the shared window placement, and for the other placements
+ * while TabCrew groups are still open in Chrome. Never for an extension without shared groups.
+ */
+export function groupsSectionVisible(placement: Placement, groups: readonly PopupGroupInfo[] | undefined): boolean {
+  if (!groups) return false;
+  return placement === "shared_window" || groups.some((g) => g.group_id >= 0);
+}
+
+/** The "collect" finish option, named after the collect group (`✓ <default group name>`). */
+export function collectLabel(groupName: string | undefined): string {
+  return `Collect in "${v2CollectGroupTitle(groupName)}"`;
+}
+
+/**
+ * The group a rename started on, in a fresh state: a live group by id; a name-only entry (whose
+ * negative id shifts) or a group renamed meanwhile by its name; null when it is gone.
+ */
+export function renameTarget(groups: readonly PopupGroupInfo[] | undefined, edit: { readonly group_id: number; readonly name: string }): number | null {
+  const list = groups ?? [];
+  if (edit.group_id >= 0 && list.some((g) => g.group_id === edit.group_id)) return edit.group_id;
+  return list.find((g) => g.name === edit.name)?.group_id ?? null;
+}
+
+export interface ActionNote {
+  readonly text: string;
+  readonly tone: "ok" | "error";
+}
+
+/** The note next to a control after a popup action. */
+export function actionNote(result: PopupActionResult, done: string): ActionNote {
+  if (result.ok) return { text: done, tone: "ok" };
+  const error = result.error.trim().replace(/\.$/, "");
+  return { text: `${error.charAt(0).toUpperCase()}${error.slice(1)}.`, tone: "error" };
 }

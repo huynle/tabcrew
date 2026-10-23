@@ -368,30 +368,41 @@ describe("popup placement radios", () => {
     };
   }
 
-  it("checks the stored choice (shared_window by default, no radio for it yet) and persists a change", async () => {
+  it("checks the stored choice (shared_window by default), persists a change and reports it", async () => {
+    const shared = radio("shared_window");
     const own = radio("own_window");
     const mine = radio("user_window");
-    await bindPlacementRadios([own, mine]);
-    expect([own.checked, mine.checked]).toEqual([false, false]);
+    const changes: string[] = [];
+    expect(await bindPlacementRadios([shared, own, mine], (p) => changes.push(p))).toBe("shared_window");
+    expect([shared.checked, own.checked, mine.checked]).toEqual([true, false, false]);
     mine.checked = true;
-    own.checked = false;
-    own.fire();
+    shared.checked = false;
+    shared.fire();
     mine.fire();
     await vi.waitFor(async () => expect(await loadPlacement()).toBe("user_window"));
     expect(fake.chrome.storage.local.set).toHaveBeenLastCalledWith({ "v2:placement": "user_window" });
+    expect(changes).toEqual(["user_window"]);
 
-    const again = [radio("own_window"), radio("user_window")];
-    await bindPlacementRadios(again);
-    expect(again.map((r) => r.checked)).toEqual([false, true]);
+    const again = [radio("shared_window"), radio("own_window"), radio("user_window")];
+    expect(await bindPlacementRadios(again)).toBe("user_window");
+    expect(again.map((r) => r.checked)).toEqual([false, false, true]);
   });
 
-  it("shows both options with the note under 'My current window'", () => {
+  it("shows the three options, shared window first and checked, each with its note", () => {
     const html = readFileSync(new URL("./popup/popup.html", import.meta.url), "utf8");
     expect(html).toContain("New agent tabs open in:");
-    expect(html).toMatch(/<input type="radio" name="placement" value="own_window" checked \/> Their own window \(fastest\)/);
-    expect(html).toMatch(/<input type="radio" name="placement" value="user_window" \/> My current window/);
-    const note = "Slower: Chrome throttles tabs you aren't looking at. Agents never switch your current tab.";
-    expect(html).toContain(note);
-    expect(html.indexOf(note)).toBeGreaterThan(html.indexOf("My current window"));
+    const options = [
+      [/<input type="radio" name="placement" value="shared_window" checked \/> One TabCrew window, shared group \(default\)/, "Fastest to start"],
+      [/<input type="radio" name="placement" value="own_window" \/> Their own window each/, "Best for many agents at once"],
+      [/<input type="radio" name="placement" value="user_window" \/> My current window/, "Slower: Chrome throttles tabs you aren't looking at. Agents never switch your current tab."],
+    ] as const;
+    let last = 0;
+    for (const [radio, note] of options) {
+      const at = html.search(radio);
+      expect(at, String(radio)).toBeGreaterThan(last);
+      expect(html.indexOf(note, at), note).toBeGreaterThan(at);
+      last = html.indexOf(note, at);
+    }
+    expect(html).toContain("agents take turns on the active tab");
   });
 });

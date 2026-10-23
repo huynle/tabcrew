@@ -31,10 +31,45 @@
     <section>
       <fieldset id="placement">
         <legend>New agent tabs open in:</legend>
-        <label class="radio"><input type="radio" name="placement" value="own_window" checked /> Their own window (fastest)</label>
+        <label class="radio"><input type="radio" name="placement" value="shared_window" checked /> One TabCrew window, shared group (default)</label>
+        <p class="note radio-note">Fastest to start: each agent gets its own tabs in one group; agents take turns on the active tab.</p>
+        <label class="radio"><input type="radio" name="placement" value="own_window" /> Their own window each</label>
+        <p class="note radio-note">Best for many agents at once: each one has its own active tab.</p>
         <label class="radio"><input type="radio" name="placement" value="user_window" /> My current window</label>
         <p class="note radio-note">Slower: Chrome throttles tabs you aren't looking at. Agents never switch your current tab.</p>
       </fieldset>
+    </section>
+
+    <section id="groups-section" hidden>
+      <h2>Tab groups</h2>
+      <label for="group-name">Default group (new sessions join it)</label>
+      <div class="row">
+        <input id="group-name" type="text" autocomplete="off" spellcheck="false" placeholder="TabCrew" />
+        <button id="save-group-name" title="New sessions join the group with this name">Save</button>
+      </div>
+      <p id="group-name-note" class="note"></p>
+      <ul id="groups"></ul>
+      <p id="groups-note" class="note"></p>
+      <label for="new-group">New group</label>
+      <div class="row">
+        <input id="new-group" type="text" autocomplete="off" spellcheck="false" placeholder="e.g. Research" />
+        <button id="create-group" title="Register a TabCrew group name">Create</button>
+      </div>
+      <p id="new-group-note" class="note"></p>
+      <p class="note guide">Chrome can't keep an empty group: it appears when an agent uses it (session_open with group set to its name).</p>
+    </section>
+
+    <section id="finish-section" hidden>
+      <fieldset id="finish-mode">
+        <legend>When an agent finishes:</legend>
+        <label class="radio"><input type="radio" name="finish-mode" value="keep" checked /> Keep tabs in the group (default)</label>
+        <p class="note radio-note">Marked finished: no agent can use them; close them when you're done.</p>
+        <label class="radio"><input type="radio" name="finish-mode" value="close" /> Close tabs</label>
+        <label class="radio"><input type="radio" name="finish-mode" value="collect" /> <span id="finish-collect-label">Collect in "✓ TabCrew"</span></label>
+        <p class="note radio-note">Moved into one collapsed group in the TabCrew window.</p>
+      </fieldset>
+      <p class="note guide">An agent can override this per call (session_close with tabs: keep, close or collect).</p>
+      <p id="finish-note" class="note"></p>
     </section>
 
     <section>
