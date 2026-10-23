@@ -21,9 +21,12 @@ function req(session: typeof alice, op: V2Request["op"], args: object = {}): V2R
 const call = (session: typeof alice, op: V2Request["op"], args: object = {}) =>
   handleRequest(req(session, op, args), { tabs, cdp, page });
 
-beforeEach(() => {
+// These tests cover the `own_window` placement (one window per session); the default
+// `shared_window` placement is covered in groups.test.ts.
+beforeEach(async () => {
   fake = createFakeChrome();
   fake.install();
+  await fake.chrome.storage.local.set({ "v2:placement": "own_window" });
   events = [];
   tabs = new TabManager((e) => events.push(e));
   cdp = new CdpManager();
@@ -255,19 +258,21 @@ describe("events", () => {
     expect(events).toEqual([{ type: "event", event: "tab_removed", short_id: "aaaa1111", tab_id: a.tab_id }]);
   });
 
-  it("reconcile rebuilds groups from titles and drops stale mappings", async () => {
+  it("reconcile rebuilds from the owner map and drops stale mappings", async () => {
     const a = (await call(alice, "tab_create", { url: "https://a" })) as { tab_id: number };
     const b = (await call(bob, "tab_create", { url: "https://b" })) as { tab_id: number };
     // Simulate a service-worker restart: a fresh manager with stale persisted state.
-    await fake.chrome.storage.session.set({
-      "v2:groups": { zzzz9999: { groupId: 424242, label: "gone" } },
-      "v2:tabSessions": { "777": "zzzz9999" },
-      "v2:sessionWindows": { zzzz9999: 555, aaaa1111: 556 },
+    const owners = (await fake.chrome.storage.local.get("v2:tabOwners"))["v2:tabOwners"] as object;
+    await fake.chrome.storage.local.set({
+      "v2:tabOwners": { ...owners, "777": "zzzz9999" },
+      "v2:sessionGroups": { ...((await fake.chrome.storage.local.get("v2:sessionGroups"))["v2:sessionGroups"] as object), zzzz9999: 424242 },
     });
-    // A user group that is not a v2 session group is ignored.
+    await fake.chrome.storage.session.set({ "v2:sessionWindows": { zzzz9999: 555, aaaa1111: 556 } });
+    // A user group, even one titled like a session, is ignored.
     const userWin = fake.addWindow();
     const userTab = fake.addTab({ windowId: userWin.id });
-    await fake.chrome.tabs.group({ tabIds: [userTab.id] });
+    const userGroup = await fake.chrome.tabs.group({ tabIds: [userTab.id] });
+    await fake.chrome.tabGroups.update(userGroup, { title: "carol · cccc3333" });
 
     const fresh = new TabManager((e) => events.push(e));
     const groups = await fresh.reconcile();
@@ -275,16 +280,18 @@ describe("events", () => {
       { short_id: "aaaa1111", tabs: [{ tab_id: a.tab_id, url: "https://a", title: "" }] },
       { short_id: "bbbb2222", tabs: [{ tab_id: b.tab_id, url: "https://b", title: "" }] },
     ]);
-    const stored = await fake.chrome.storage.session.get(["v2:groups", "v2:tabSessions", "v2:sessionWindows"]);
-    expect(Object.keys(stored["v2:groups"] as object).sort()).toEqual(["aaaa1111", "bbbb2222"]);
-    expect(stored["v2:sessionWindows"]).toEqual({
+    const stored = await fake.chrome.storage.local.get(["v2:tabOwners", "v2:sessionGroups"]);
+    expect(Object.keys(stored["v2:sessionGroups"] as object).sort()).toEqual(["aaaa1111", "bbbb2222"]);
+    expect(stored["v2:tabOwners"]).toEqual({ [a.tab_id]: "aaaa1111", [b.tab_id]: "bbbb2222" });
+    const windows = await fake.chrome.storage.session.get("v2:sessionWindows");
+    expect(windows["v2:sessionWindows"]).toEqual({
       aaaa1111: fake.tabs.get(a.tab_id)!.windowId,
       bbbb2222: fake.tabs.get(b.tab_id)!.windowId,
     });
-    expect(stored["v2:tabSessions"]).toEqual({ [a.tab_id]: "aaaa1111", [b.tab_id]: "bbbb2222" });
     // ownership still works after the rebuild
     await expect(fresh.assertOwned(alice, a.tab_id)).resolves.toBeTruthy();
     await expect(fresh.assertOwned(alice, b.tab_id)).rejects.toMatchObject({ code: "tab_not_owned" });
+    await expect(fresh.assertOwned({ short_id: "cccc3333", label: "carol" }, userTab.id)).rejects.toMatchObject({ code: "tab_not_owned" });
   });
 
   it("after reconcile, tab_create reuses the session's existing window", async () => {
@@ -435,7 +442,7 @@ describe("session_release", () => {
     const forget = vi.spyOn(page, "forget");
     fake.chrome.tabs.update.mockClear();
 
-    expect(await call(alice, "session_release")).toEqual({ kept_tabs: 2, moved: true });
+    expect(await call(alice, "session_release")).toEqual({ kept_tabs: 2, moved: true, mode: "keep" });
 
     const group = kept("✓ alice")!;
     expect(group).toBeTruthy();
@@ -463,11 +470,14 @@ describe("session_release", () => {
     await fake.chrome.tabs.remove(a1.tab_id);
     await tabs.handleTabRemoved(a1.tab_id);
     expect(events).toEqual([]);
-    const stored = await fake.chrome.storage.session.get(["v2:releasedGroups", "v2:groups", "v2:sessionWindows", "v2:tabSessions"]);
+    const stored = await fake.chrome.storage.session.get(["v2:releasedGroups", "v2:sessionWindows"]);
     expect(Object.keys(stored["v2:releasedGroups"] as object)).toEqual([String(group.id)]);
-    expect(Object.keys(stored["v2:groups"] as object)).toEqual([bob.short_id]);
     expect(Object.keys(stored["v2:sessionWindows"] as object)).toEqual([bob.short_id]);
-    expect(Object.values(stored["v2:tabSessions"] as object)).toEqual([bob.short_id]);
+    const owned = await fake.chrome.storage.local.get(["v2:tabOwners", "v2:sessionGroups", "v2:managedGroups"]);
+    expect(Object.keys(owned["v2:sessionGroups"] as object)).toEqual([bob.short_id]);
+    expect(Object.values(owned["v2:tabOwners"] as object)).toEqual([bob.short_id]);
+    // The finished group is the user's now, not a TabCrew-managed group.
+    expect(Object.keys(owned["v2:managedGroups"] as object)).toEqual([String(fake.tabs.get(b.tab_id)!.groupId)]);
     // Bob is unaffected.
     await expect(tabs.assertOwned(bob, b.tab_id)).resolves.toBeTruthy();
   });
@@ -501,7 +511,7 @@ describe("session_release", () => {
     await tabs.handleWindowFocused(fake.tabs.get(b.tab_id)!.windowId);
     fake.chrome.windows.update.mockClear();
 
-    expect(await call(alice, "session_release")).toEqual({ kept_tabs: 1, moved: true });
+    expect(await call(alice, "session_release")).toEqual({ kept_tabs: 1, moved: true, mode: "keep" });
     expect(kept("✓ alice")!.windowId).toBe(older.win.id);
     expect(fake.chrome.windows.update).not.toHaveBeenCalled();
   });
@@ -519,7 +529,7 @@ describe("session_release", () => {
     const a = (await call(alice, "tab_create", {})) as Info;
     const sessionWindow = fake.tabs.get(a.tab_id)!.windowId;
     await call(bob, "tab_create", {});
-    expect(await call(alice, "session_release")).toEqual({ kept_tabs: 1, moved: false });
+    expect(await call(alice, "session_release")).toEqual({ kept_tabs: 1, moved: false, mode: "keep" });
     expect(fake.chrome.tabGroups.move).not.toHaveBeenCalled();
     const group = kept("✓ alice")!;
     expect(group.windowId).toBe(sessionWindow);
@@ -538,7 +548,7 @@ describe("session_release", () => {
 
   it("returns kept_tabs 0 for a session without tabs", async () => {
     await userWindow();
-    expect(await call(alice, "session_release")).toEqual({ kept_tabs: 0, moved: false });
+    expect(await call(alice, "session_release")).toEqual({ kept_tabs: 0, moved: false, mode: "keep" });
     expect(fake.chrome.tabGroups.move).not.toHaveBeenCalled();
   });
 

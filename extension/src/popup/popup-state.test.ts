@@ -179,6 +179,8 @@ describe("popup: Show and finished sessions", () => {
     userWin = fake.addWindow({ focused: true });
     userTab = fake.addTab({ windowId: userWin.id, url: "https://user", active: true });
     await fake.chrome.storage.local.set({ "v2:token": "secret-token" });
+    // Released ("✓ label") groups are the own_window placement's finish behaviour.
+    await fake.chrome.storage.local.set({ "v2:placement": "own_window" });
     vi.resetModules();
     await import("../service-worker.js");
     await settle();

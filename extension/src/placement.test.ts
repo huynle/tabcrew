@@ -50,17 +50,19 @@ function expectUserViewUntouched() {
 }
 
 describe("placement setting", () => {
-  it("defaults to own_window when nothing is stored", async () => {
-    expect(await loadPlacement()).toBe("own_window");
+  it("defaults to shared_window when nothing is stored: the shared TabCrew group in the TabCrew window", async () => {
+    expect(await loadPlacement()).toBe("shared_window");
     const a = (await call(alice, "tab_create", {})) as Info;
     expect(fake.chrome.windows.create).toHaveBeenCalledTimes(1);
     expect(tabOf(a).windowId).not.toBe(user.win.id);
-    expect((await fake.chrome.storage.session.get("v2:placements"))["v2:placements"]).toEqual({ [alice.short_id]: "own_window" });
+    expect(groupOf(a).title).toBe("TabCrew");
+    expect((await fake.chrome.storage.session.get("v2:placements"))["v2:placements"]).toEqual({ [alice.short_id]: "shared_window" });
+    expect((await fake.chrome.storage.local.get("v2:tabcrewWindow"))["v2:tabcrewWindow"]).toBe(tabOf(a).windowId);
   });
 
-  it("treats an unknown stored value as own_window", async () => {
+  it("treats an unknown stored value as shared_window", async () => {
     await setPlacement("somewhere");
-    expect(await loadPlacement()).toBe("own_window");
+    expect(await loadPlacement()).toBe("shared_window");
   });
 });
 
@@ -140,7 +142,7 @@ describe("user_window placement", () => {
     // An own_window session's finished group still goes to the user's window.
     await setPlacement("own_window");
     await call(bob, "tab_create", {});
-    expect(await call(bob, "session_release")).toEqual({ kept_tabs: 1, moved: true });
+    expect(await call(bob, "session_release")).toEqual({ kept_tabs: 1, moved: true, mode: "keep" });
     expect([...fake.groups.values()].find((g) => g.title === "✓ bob")!.windowId).toBe(user.win.id);
     expect(user.tab.active).toBe(true);
   });
@@ -194,7 +196,7 @@ describe("user_window placement", () => {
     groupOf(a1).collapsed = false;
     const groupId = tabOf(a1).groupId;
 
-    expect(await call(alice, "session_release")).toEqual({ kept_tabs: 2, moved: true });
+    expect(await call(alice, "session_release")).toEqual({ kept_tabs: 2, moved: true, mode: "keep" });
     expect(fake.groups.get(groupId)).toMatchObject({ title: "✓ alice", collapsed: true, windowId: user.win.id });
     expect(fake.chrome.tabGroups.move).not.toHaveBeenCalled();
     expect(fake.chrome.tabs.move).not.toHaveBeenCalled();
@@ -259,6 +261,7 @@ describe("user_window placement", () => {
 
 describe("switching the setting mid-session", () => {
   it("does not move an existing own_window session", async () => {
+    await setPlacement("own_window");
     const a1 = (await call(alice, "tab_create", {})) as Info;
     await setPlacement("user_window");
     const a2 = (await call(alice, "tab_create", {})) as Info;
@@ -298,7 +301,7 @@ describe("reconcile", () => {
     fake.chrome.tabs.update.mockClear();
     await call(alice, "snapshot", { tab_id: a.tab_id }, fresh).catch(() => undefined);
     expect(fake.chrome.tabs.update).not.toHaveBeenCalled();
-    expect(await call(alice, "session_release", {}, fresh)).toEqual({ kept_tabs: 1, moved: true });
+    expect(await call(alice, "session_release", {}, fresh)).toEqual({ kept_tabs: 1, moved: true, mode: "keep" });
     expect(fake.chrome.tabGroups.move).not.toHaveBeenCalled();
   });
 
@@ -365,30 +368,41 @@ describe("popup placement radios", () => {
     };
   }
 
-  it("checks the stored choice (own_window by default) and persists a change", async () => {
+  it("checks the stored choice (shared_window by default), persists a change and reports it", async () => {
+    const shared = radio("shared_window");
     const own = radio("own_window");
     const mine = radio("user_window");
-    await bindPlacementRadios([own, mine]);
-    expect([own.checked, mine.checked]).toEqual([true, false]);
+    const changes: string[] = [];
+    expect(await bindPlacementRadios([shared, own, mine], (p) => changes.push(p))).toBe("shared_window");
+    expect([shared.checked, own.checked, mine.checked]).toEqual([true, false, false]);
     mine.checked = true;
-    own.checked = false;
-    own.fire();
+    shared.checked = false;
+    shared.fire();
     mine.fire();
     await vi.waitFor(async () => expect(await loadPlacement()).toBe("user_window"));
     expect(fake.chrome.storage.local.set).toHaveBeenLastCalledWith({ "v2:placement": "user_window" });
+    expect(changes).toEqual(["user_window"]);
 
-    const again = [radio("own_window"), radio("user_window")];
-    await bindPlacementRadios(again);
-    expect(again.map((r) => r.checked)).toEqual([false, true]);
+    const again = [radio("shared_window"), radio("own_window"), radio("user_window")];
+    expect(await bindPlacementRadios(again)).toBe("user_window");
+    expect(again.map((r) => r.checked)).toEqual([false, false, true]);
   });
 
-  it("shows both options with the note under 'My current window'", () => {
+  it("shows the three options, shared window first and checked, each with its note", () => {
     const html = readFileSync(new URL("./popup/popup.html", import.meta.url), "utf8");
     expect(html).toContain("New agent tabs open in:");
-    expect(html).toMatch(/<input type="radio" name="placement" value="own_window" checked \/> Their own window \(fastest\)/);
-    expect(html).toMatch(/<input type="radio" name="placement" value="user_window" \/> My current window/);
-    const note = "Slower: Chrome throttles tabs you aren't looking at. Agents never switch your current tab.";
-    expect(html).toContain(note);
-    expect(html.indexOf(note)).toBeGreaterThan(html.indexOf("My current window"));
+    const options = [
+      [/<input type="radio" name="placement" value="shared_window" checked \/> One TabCrew window, shared group \(default\)/, "Fastest to start"],
+      [/<input type="radio" name="placement" value="own_window" \/> Their own window each/, "Best for many agents at once"],
+      [/<input type="radio" name="placement" value="user_window" \/> My current window/, "Slower: Chrome throttles tabs you aren't looking at. Agents never switch your current tab."],
+    ] as const;
+    let last = 0;
+    for (const [radio, note] of options) {
+      const at = html.search(radio);
+      expect(at, String(radio)).toBeGreaterThan(last);
+      expect(html.indexOf(note, at), note).toBeGreaterThan(at);
+      last = html.indexOf(note, at);
+    }
+    expect(html).toContain("agents take turns on the active tab");
   });
 });

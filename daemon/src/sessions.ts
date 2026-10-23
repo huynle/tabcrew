@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { chmodSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import type { V2SessionRef, V2TabInfo } from "@tabcrew/shared/v2";
+import { v2NormaliseGroupName, type V2SessionRef, type V2TabInfo } from "@tabcrew/shared/v2";
 import { DaemonError } from "./errors.js";
 import { log } from "./log.js";
 
@@ -9,6 +9,11 @@ export interface Session {
   readonly key: string;
   readonly short_id: string;
   readonly label: string;
+  /**
+   * The TabCrew tab group the session joins (normalised by `v2NormaliseGroupName`). Missing: the
+   * extension's default group. Changes when the group is renamed (`renameGroup`).
+   */
+  group?: string;
   readonly created_at: number;
   last_used_at: number;
   /** Set when the user pressed Stop; every call then fails with `stopped_by_user`. */
@@ -28,6 +33,7 @@ interface PersistedSession {
   key: string;
   short_id: string;
   label: string;
+  group?: string;
   created_at: number;
   last_used_at: number;
   stopped?: boolean;
@@ -69,7 +75,7 @@ export function normaliseLabel(label: string | undefined): string {
 }
 
 export function sessionRef(session: Session): V2SessionRef {
-  return { short_id: session.short_id, label: session.label };
+  return { short_id: session.short_id, label: session.label, ...(session.group !== undefined && { group: session.group }) };
 }
 
 /**
@@ -97,15 +103,18 @@ export class SessionRegistry {
     this.tabListeners.push(listener);
   }
 
-  open(label?: string): { handle: string; session: Session } {
+  /** Open a session; an invalid `group` (see `v2NormaliseGroupName`) means the default group. */
+  open(label?: string, group?: string): { handle: string; session: Session } {
     const handle = `s_${randomBytes(16).toString("base64url")}`;
     let shortId = newShortId();
     while (this.byShortId.has(shortId)) shortId = newShortId();
     const t = this.now();
+    const groupName = v2NormaliseGroupName(group);
     const session: Session = {
       key: hashHandle(handle),
       short_id: shortId,
       label: normaliseLabel(label),
+      ...(groupName !== null && { group: groupName }),
       created_at: t,
       last_used_at: t,
       stopped: false,
@@ -285,6 +294,22 @@ export class SessionRegistry {
     }
   }
 
+  /**
+   * A TabCrew group was renamed from `previous` to `name`: every session in it (by name), plus
+   * `include` (the caller, which may have been using the default group), now carries `name`.
+   * Returns the sessions that changed; an invalid `name` changes nothing.
+   */
+  renameGroup(previous: string, name: string, include?: Session): Session[] {
+    const next = v2NormaliseGroupName(name);
+    if (next === null) return [];
+    const changed = this.list().filter(
+      (s) => (s.group === previous || (s === include && s.group === undefined)) && s.group !== next,
+    );
+    for (const s of changed) s.group = next;
+    if (changed.length) this.save();
+    return changed;
+  }
+
   /** Sessions whose last use is older than the idle timeout. */
   idleSessions(): Session[] {
     const timeout = this.options.idleTimeoutMs;
@@ -318,10 +343,12 @@ export class SessionRegistry {
       ) {
         continue;
       }
+      const group = v2NormaliseGroupName(raw.group);
       const session: Session = {
         key: raw.key,
         short_id: raw.short_id,
         label: normaliseLabel(raw.label),
+        ...(group !== null && { group }),
         created_at: Number(raw.created_at) || this.now(),
         last_used_at: Number(raw.last_used_at) || this.now(),
         stopped: raw.stopped === true,
@@ -348,6 +375,7 @@ export class SessionRegistry {
       key: s.key,
       short_id: s.short_id,
       label: s.label,
+      ...(s.group !== undefined && { group: s.group }),
       created_at: s.created_at,
       last_used_at: s.last_used_at,
       ...(s.stopped && { stopped: true }),

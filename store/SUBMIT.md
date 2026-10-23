@@ -41,7 +41,7 @@ Copy from `store/listing.md`:
 Copy from `store/permissions.md`:
 
 - [ ] Single purpose description.
-- [ ] One justification per permission: `debugger`, `tabs`, `tabGroups`, `storage`, `alarms`, `offscreen`, `nativeMessaging` (there are no host permissions). If the dashboard lists a permission not covered there, stop: the manifest changed and `store/permissions.md` must be updated first.
+- [ ] One justification per permission: `debugger`, `tabs`, `tabGroups`, `storage`, `alarms`, `offscreen`, `nativeMessaging`, plus the optional host permissions (`https://*/*`, `http://localhost/*`, `http://127.0.0.1/*`, requested at runtime in hub mode). There are no install-time host permissions. If the dashboard lists a permission not covered there, stop: the manifest changed and `store/permissions.md` must be updated first.
 - [ ] Remote code → "No, I am not using remote code".
 - [ ] Data usage → check **Web history** and **Website content** only; check all three certifications.
 - [ ] Privacy policy URL → `https://github.com/huynle/tabcrew/blob/main/docs/privacy.md`.
@@ -80,7 +80,7 @@ The store assigns a permanent 32-letter item ID (visible in the dashboard and in
    git commit -am "chore: release 0.4.1 with the Chrome Web Store ID"
    git tag v0.4.1 && git push && git push --tags
    ```
-   The release workflow publishes `tabcrew` to npm and creates the GitHub release. Users then run `npx tabcrew@latest setup` (or `npx tabcrew update`).
+   The release workflow publishes `tabcrew` to npm and creates the GitHub release. Users then run `npx tabcrew@latest setup` (or `npx tabcrew update`). The same ID list is the hub's WebSocket Origin allowlist: until a release carries the store ID, a hub (`tabcrew mcp`) only accepts the unpacked build with the fixed dev ID.
 4. [ ] Upload the new extension zip from that release to the store as an update (the version must increase with every store upload).
 
 ## Later updates

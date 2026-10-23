@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { WebSocket } from "ws";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { CLOSE_BAD_HELLO, CLOSE_REPLACED, ExtensionBridge } from "./bridge.js";
+import { CLOSE_BAD_HELLO, CLOSE_REPLACED, ExtensionBridge, MUTATING_OPS } from "./bridge.js";
 import { daemonVersion, type RunningDaemon } from "./daemon.js";
 import {
   call,
@@ -99,6 +99,8 @@ describe("HTTP endpoint", () => {
         "act",
         "browse",
         "debug_logs",
+        "group_list",
+        "group_rename",
         "navigate",
         "observe",
         "read_text",
@@ -201,6 +203,56 @@ describe("extension bridge", () => {
     ext.respondToPings = false;
     await ext.closed;
     expect(daemon.bridge.connected).toBe(false);
+  });
+});
+
+describe("extension bridge: shared groups", () => {
+  const TOKEN = "t".repeat(32);
+  const refs = [
+    { short_id: "AAAAAAAA", label: "plain" },
+    { short_id: "BBBBBBBB", label: "named", group: "Research" },
+  ];
+
+  async function bridgeWith(features: string[]) {
+    const bridge = new ExtensionBridge({ token: TOKEN, port: 0, sessions: () => refs, offlineWaitMs: 200 });
+    const port = await bridge.start();
+    const ext = await FakeExtension.connect(port, TOKEN, { features });
+    extensions.push(ext);
+    return { bridge, ext };
+  }
+
+  it("announces session groups in welcome and requests only to an extension with the groups feature", async () => {
+    const { bridge, ext } = await bridgeWith(["groups"]);
+    try {
+      expect(ext.welcome?.sessions).toEqual(refs);
+      await bridge.request(refs[1], "tab_list", {});
+      expect(ext.requests.at(-1)?.session).toEqual(refs[1]);
+      expect(await bridge.request(refs[1], "group_list", {})).toEqual({ groups: [{ name: "Research", mine: true }] });
+    } finally {
+      await bridge.close();
+    }
+  });
+
+  it("strips groups for an older extension and refuses group ops with an update hint", async () => {
+    const { bridge, ext } = await bridgeWith([]);
+    try {
+      expect(ext.welcome?.sessions).toEqual([refs[0], { short_id: "BBBBBBBB", label: "named" }]);
+      await bridge.request(refs[1], "tab_list", {});
+      expect(ext.requests.at(-1)?.session).toEqual({ short_id: "BBBBBBBB", label: "named" });
+      for (const op of ["group_list", "group_rename"] as const) {
+        const err = await bridge.request(refs[1], op, op === "group_rename" ? { name: "X" } : {}).catch((e) => e);
+        expect(err).toMatchObject({ code: "invalid_args" });
+        expect(err.message).toMatch(/update the TabCrew extension/);
+      }
+      expect(ext.requests.some((r) => r.op === "group_list" || r.op === "group_rename")).toBe(false);
+    } finally {
+      await bridge.close();
+    }
+  });
+
+  it("treats group_rename as mutating, group_list as read-only", async () => {
+    expect(MUTATING_OPS.has("group_rename")).toBe(true);
+    expect(MUTATING_OPS.has("group_list")).toBe(false);
   });
 });
 

@@ -43,7 +43,8 @@ export interface RawSnapshot {
   w: number;
   h: number;
   text: string;
-  scroll: { y: number; height: number };
+  /** `areas`: [node, scrollTop, scrollHeight] per offered scroll area (part of the fingerprint). */
+  scroll: { y: number; height: number; areas?: [number, number, number][] };
   actions: RawAction[];
   marker: unknown;
   page_key: unknown;

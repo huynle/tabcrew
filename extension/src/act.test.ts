@@ -4,7 +4,7 @@ import { CdpManager } from "./cdp.js";
 import { handleRequest } from "./ops.js";
 import { PageController, SNAPSHOT_ATTEMPTS, type RawAction, type RawSnapshot } from "./snapshot/controller.js";
 import { canonicalJson, fingerprint } from "./snapshot/fingerprint.js";
-import { MARKER_SOURCE, SNAPSHOT_SOURCE, guardSource, settleSource, targetSource } from "./snapshot/scripts.js";
+import { MARKER_SOURCE, SNAPSHOT_SOURCE, guardSource, scrolledSource, scrollPointSource, settleSource, targetSource } from "./snapshot/scripts.js";
 import { TabManager } from "./tabs.js";
 import { createFakeChrome } from "./test/fakes.js";
 
@@ -50,6 +50,8 @@ class FakePage {
   target: unknown = { x: 60, y: 30 };
   targetThrows = false;
   failInput: string | null = null;
+  scrollPoint: unknown = { x: 500, y: 300, top: 0 };
+  scrolledThrows = false;
 
   send = async (_tabId: number, method: string, params?: Record<string, unknown>): Promise<unknown> => {
     this.calls.push({ method, params });
@@ -75,6 +77,11 @@ class FakePage {
       return value(this.target);
     }
     if (expr.startsWith("/*cu:settle*/")) return value(true);
+    if (expr.startsWith("/*cu:scrollpoint*/")) return value(this.scrollPoint);
+    if (expr.startsWith("/*cu:scrolled*/")) {
+      if (this.scrolledThrows) return { exceptionDetails: { text: "Execution context was destroyed." } };
+      return value({ top: 240, by: "wheel" });
+    }
     throw new Error(`unexpected expression ${expr.slice(0, 40)}`);
   };
 
@@ -382,6 +389,99 @@ describe("act: outcome", () => {
   });
 });
 
+describe("act: scrollable containers", () => {
+  const AREA: RawAction = { id: "scroll_down_1", kind: "scroll", label: 'Scroll down in "Provider settings" dialog', node: 9, delta: 240 };
+  const withArea = () => rawPage({ actions: [...rawPage().actions.slice(0, 4), AREA, ...rawPage().actions.slice(4)] });
+
+  it("wheels at the area's own point, then confirms (or falls back to) the area scroll", async () => {
+    fake.current = withArea();
+    const snap = await observe();
+    await expect(page.act(TAB, { fingerprint: snap.fingerprint, action_id: "scroll_down_1" })).resolves.toMatchObject({ executed: "scroll_down_1" });
+    expect(fake.evaluations("marker")).toHaveLength(1);
+    expect(String(fake.evaluations("scrollpoint")[0]!.params!.expression)).toBe(scrollPointSource({ node: 9, delta: 240 }));
+    expect(fake.inputs()).toEqual([
+      { method: "Input.dispatchMouseEvent", params: { type: "mouseWheel", x: 500, y: 300, deltaX: 0, deltaY: 240 } },
+    ]);
+    const scrolled = fake.evaluations("scrolled")[0]!.params!;
+    expect(scrolled).toMatchObject({ awaitPromise: true, expression: scrolledSource({ node: 9, top: 0, delta: 240, wheel: true }) });
+  });
+
+  it("without a point that reaches the area, scrolls it by script and sends no input", async () => {
+    fake.current = withArea();
+    fake.scrollPoint = { x: null, top: 12 };
+    const snap = await observe();
+    await page.act(TAB, { fingerprint: snap.fingerprint, action_id: "scroll_down_1" });
+    expect(fake.inputs()).toEqual([]);
+    expect(String(fake.evaluations("scrolled")[0]!.params!.expression)).toBe(scrolledSource({ node: 9, top: 12, delta: 240, wheel: false }));
+  });
+
+  it("a vanished area → its error, nothing executed", async () => {
+    fake.current = withArea();
+    fake.scrollPoint = { error: "stale_page", message: "The scroll area is no longer in the page. Observe again." };
+    const snap = await observe();
+    await expect(page.act(TAB, { fingerprint: snap.fingerprint, action_id: "scroll_down_1" })).rejects.toMatchObject({ code: "stale_page" });
+    expect(fake.inputs()).toEqual([]);
+    expect(fake.evaluations("scrolled")).toHaveLength(0);
+  });
+
+  it("a changed marker (e.g. the area scrolled meanwhile) → stale_page before anything", async () => {
+    fake.current = withArea();
+    const snap = await observe();
+    fake.current = { ...withArea(), marker: ["t0", "https://fixture.test/", "Cart total: $10", [[9, 80]]] };
+    await expect(page.act(TAB, { fingerprint: snap.fingerprint, action_id: "scroll_down_1" })).rejects.toMatchObject({ code: "stale_page" });
+    expect(fake.evaluations("scrollpoint")).toHaveLength(0);
+    expect(fake.inputs()).toEqual([]);
+  });
+
+  it("a failure after the wheel → outcome_unknown", async () => {
+    fake.current = withArea();
+    fake.scrolledThrows = true;
+    const snap = await observe();
+    await expect(page.act(TAB, { fingerprint: snap.fingerprint, action_id: "scroll_down_1" })).rejects.toMatchObject({ code: "outcome_unknown" });
+    expect(page.latest(TAB)).toBeUndefined();
+  });
+
+  it("page scroll is unchanged: one wheel at the viewport centre, no area scripts", async () => {
+    fake.current = withArea();
+    const snap = await observe();
+    await page.act(TAB, { fingerprint: snap.fingerprint, action_id: "scroll_down" });
+    expect(fake.evaluations("scrollpoint")).toHaveLength(0);
+    expect(fake.evaluations("scrolled")).toHaveLength(0);
+    expect(fake.inputs()).toEqual([
+      { method: "Input.dispatchMouseEvent", params: { type: "mouseWheel", x: 500, y: 400, deltaX: 0, deltaY: 560 } },
+    ]);
+  });
+});
+
+describe("act: scroll into view before input", () => {
+  it("the target check may reveal the target (awaited); the click lands at the revealed centre", async () => {
+    const snap = await observe();
+    fake.target = { x: 300, y: 420, revealed: true };
+    await expect(page.act(TAB, { fingerprint: snap.fingerprint, action_id: "e1" })).resolves.toMatchObject({ executed: "e1" });
+    expect(fake.evaluations("target")[0]!.params).toMatchObject({ awaitPromise: true });
+    expect(fake.inputs().map((c) => c.params)).toEqual([
+      { type: "mousePressed", x: 300, y: 420, button: "left", clickCount: 1 },
+      { type: "mouseReleased", x: 300, y: 420, button: "left", clickCount: 1 },
+    ]);
+  });
+
+  it("still covered after revealing → target_covered, no input, and the scrolled page must be observed again", async () => {
+    const snap = await observe();
+    fake.target = { error: "target_covered", message: "Another element covers the target.", revealed: true };
+    const err = await page.act(TAB, { fingerprint: snap.fingerprint, action_id: "e1" }).catch((e) => e);
+    expect(err).toMatchObject({ code: "target_covered", message: expect.stringContaining("scrolled") });
+    expect(fake.inputs()).toEqual([]);
+    expect(page.latest(TAB)).toBeUndefined();
+  });
+
+  it("an error without revealing keeps the observation (nothing changed)", async () => {
+    const snap = await observe();
+    fake.target = { error: "target_covered", message: "Another element covers the target." };
+    await expect(page.act(TAB, { fingerprint: snap.fingerprint, action_id: "e1" })).rejects.toMatchObject({ code: "target_covered" });
+    expect(page.latest(TAB)?.fingerprint).toBe(snap.fingerprint);
+  });
+});
+
 describe("page scripts", () => {
   const sources = {
     snapshot: SNAPSHOT_SOURCE,
@@ -389,6 +489,8 @@ describe("page scripts", () => {
     guard: guardSource(12),
     target: targetSource({ node: 3, kind: "select", value: 'a"b' }),
     settle: settleSource({ node: 2, kind: "fill" }),
+    scrollpoint: scrollPointSource({ node: 9, delta: -240 }),
+    scrolled: scrolledSource({ node: 9, top: 40, delta: -240, wheel: true }),
   };
 
   it.each(Object.entries(sources))("%s is a valid JS expression", (_name, source) => {

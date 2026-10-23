@@ -7,21 +7,16 @@
 // fixture button; it lands ~400 ms later. The test observes right after arming, waits, then
 // acts on that outdated observation and checks the guard's verdict.
 //
-// Usage: node daemon/scripts/guards.mjs [--keep-open] [--only <substring>]
+// Usage: [TABCREW_TRANSPORT=shim] node daemon/scripts/guards.mjs [--keep-open] [--only <substring>]
 import { createServer } from "node:http";
 import { readFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { basename, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { connect, describeTransport } from "./connect.mjs";
 
-const home = process.env.TABCREW_HOME ?? process.env.CHROMEUSE_HOME ?? join(homedir(), ".tabcrew");
-const port = process.env.TABCREW_MCP_PORT ?? process.env.CHROMEUSE_MCP_PORT ?? "8770";
 const keepOpen = process.argv.includes("--keep-open");
 const onlyIdx = process.argv.indexOf("--only");
 const only = onlyIdx > 0 ? process.argv[onlyIdx + 1] : null;
-const token = readFileSync(join(home, "token"), "utf8").trim();
 const FIXTURES = fileURLToPath(new URL("../../extension/test-fixtures/", import.meta.url));
 const ARM_WAIT_MS = 900; // fixture applies armed mutations after 400 ms
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -41,11 +36,8 @@ await new Promise((r) => server.listen(0, "127.0.0.1", r));
 const base = `http://127.0.0.1:${server.address().port}`;
 
 // --- MCP --------------------------------------------------------------------------------
-const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`), {
-  requestInit: { headers: { Authorization: `Bearer ${token}` } },
-});
-const client = new Client({ name: "tabcrew-guards", version: "0.0.0" });
-await client.connect(transport);
+console.log(describeTransport());
+const client = await connect("tabcrew-guards");
 
 async function call(name, args) {
   const r = await client.callTool({ name, arguments: args });

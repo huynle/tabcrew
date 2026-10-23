@@ -6,17 +6,17 @@ export const OPERATIONS = ["CLICK", "TYPE_TEXT", "SELECT", "SCROLL_UP", "SCROLL_
 export type Operation = (typeof OPERATIONS)[number];
 export type ElementOperation = "CLICK" | "TYPE_TEXT" | "SELECT";
 export type ControlOperation = "SCROLL_UP" | "SCROLL_DOWN" | "WAIT";
+export type ScrollOperation = "SCROLL_UP" | "SCROLL_DOWN";
 
 const ELEMENT_OPERATIONS: Readonly<Record<string, ElementOperation>> = {
   click: "CLICK",
   fill: "TYPE_TEXT",
   select: "SELECT",
 };
-const CONTROL_OPERATIONS: Readonly<Record<string, ControlOperation>> = {
-  scroll_down: "SCROLL_DOWN",
-  scroll_up: "SCROLL_UP",
-  wait: "WAIT",
-};
+/** Snapshot control ids: page scroll (`scroll_down`), scroll area n (`scroll_down_<n>`), wait. */
+const SCROLL_ID = /^scroll_(down|up)(?:_([1-9]\d*))?$/;
+/** Scroll target of the page; scroll areas are "s1".."s5". */
+export const PAGE_TARGET = "page";
 
 export const MAX_TYPE_TEXT = 2000;
 const OPTION_SEPARATOR = " → ";
@@ -44,6 +44,11 @@ export interface JevElement {
 export interface JevControl {
   readonly operation: ControlOperation;
   readonly label: string;
+  /**
+   * Scroll only: "s<n>" for a scroll area (a dialog or panel), "page" for the page when it is not
+   * the first listed control of its operation. Omitted for the page when it is listed first.
+   */
+  readonly target?: string;
 }
 
 /** The agent-facing table plus the private maps from (operation, target) to snapshot actions. */
@@ -52,7 +57,10 @@ export interface ActionSpace {
   readonly controls: JevControl[];
   /** operation -> target ("3" or "3:2") -> snapshot action. */
   readonly targets: ReadonlyMap<ElementOperation, ReadonlyMap<string, V2Action>>;
+  /** The first listed action per control operation (what a control without a target runs). */
   readonly controlActions: ReadonlyMap<ControlOperation, V2Action>;
+  /** Scroll operation -> target ("page", "s1", …) -> snapshot action, in listed order. */
+  readonly scrollTargets: ReadonlyMap<ScrollOperation, ReadonlyMap<string, V2Action>>;
 }
 
 export interface Observation {
@@ -79,15 +87,32 @@ export function actionSpace(actions: readonly V2Action[]): ActionSpace {
   const indexByNode = new Map<string, number>();
   const targets = new Map<ElementOperation, Map<string, V2Action>>();
   const controlActions = new Map<ControlOperation, V2Action>();
+  const scrollTargets = new Map<ScrollOperation, Map<string, V2Action>>();
   const controls: JevControl[] = [];
 
   for (const action of actions) {
     if (!action || typeof action.id !== "string") continue;
-    const control = CONTROL_OPERATIONS[action.id];
-    if (control) {
-      if (!controlActions.has(control)) {
-        controlActions.set(control, action);
-        controls.push({ operation: control, label: str(action.label) ?? control });
+    const scroll = SCROLL_ID.exec(action.id);
+    if (scroll) {
+      const operation: ScrollOperation = scroll[1] === "down" ? "SCROLL_DOWN" : "SCROLL_UP";
+      const target = scroll[2] ? `s${scroll[2]}` : PAGE_TARGET;
+      let group = scrollTargets.get(operation);
+      if (!group) {
+        group = new Map();
+        scrollTargets.set(operation, group);
+      }
+      if (group.has(target)) continue;
+      const first = group.size === 0;
+      group.set(target, action);
+      if (first) controlActions.set(operation, action);
+      const label = str(action.label) ?? operation;
+      controls.push(first && target === PAGE_TARGET ? { operation, label } : { operation, label, target });
+      continue;
+    }
+    if (action.id === "wait") {
+      if (!controlActions.has("WAIT")) {
+        controlActions.set("WAIT", action);
+        controls.push({ operation: "WAIT", label: str(action.label) ?? "WAIT" });
       }
       continue;
     }
@@ -130,7 +155,12 @@ export function actionSpace(actions: readonly V2Action[]): ActionSpace {
     }
     group.set(target, action);
   }
-  return { elements, controls, targets, controlActions };
+  return { elements, controls, targets, controlActions, scrollTargets };
+}
+
+/** Scroll operations with more than one target (page and/or areas): the ones that need a target choice. */
+export function scrollChoices(space: ActionSpace): ReadonlyMap<ScrollOperation, ReadonlyMap<string, V2Action>> {
+  return new Map([...space.scrollTargets].filter(([, group]) => group.size > 1));
 }
 
 /** Validate the extension's snapshot just enough to build a table from it. */
@@ -206,7 +236,7 @@ export class ObservationCache {
 
 export interface ResolvedAct {
   readonly action: V2Action;
-  /** Normalised target ("3", "3:2"), or null for controls. */
+  /** Normalised target ("3", "3:2", scroll "s1" / "page"), or null for a control without a target. */
   readonly target: string | null;
 }
 
@@ -223,10 +253,21 @@ export function resolveAct(space: ActionSpace, operation: Operation, rawTarget: 
   if (operation === "SCROLL_UP" || operation === "SCROLL_DOWN" || operation === "WAIT") {
     const action = space.controlActions.get(operation);
     if (!action) {
-      const available = space.controls.map((c) => c.operation);
+      const available = [...new Set(space.controls.map((c) => c.operation))];
       throw new DaemonError("target_invalid", `${operation} is not available on this page; available controls: ${listHint(available)}`);
     }
-    return { action, target: null };
+    if (operation === "WAIT" || rawTarget === undefined || rawTarget === "") return { action, target: null };
+    // Scroll: "page" or "s<n>" from the observe controls.
+    const group = space.scrollTargets.get(operation)!;
+    const target = String(rawTarget).trim().toLowerCase();
+    const chosen = group.get(target);
+    if (!chosen) {
+      throw new DaemonError(
+        "target_invalid",
+        `${operation} target ${JSON.stringify(String(rawTarget)).slice(0, 24)} is not offered; valid ${operation} targets: ${listHint([...group.keys()])} (or no target for the first listed)`,
+      );
+    }
+    return { action: chosen, target };
   }
   if (rawTarget === undefined || rawTarget === "") {
     throw new DaemonError("invalid_args", `${operation} needs a target from the observe table`);

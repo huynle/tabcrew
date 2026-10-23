@@ -1,14 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type Server as HttpServer, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { CallToolRequestSchema, isInitializeRequest, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { hostAllowed } from "../localhost.js";
 import { log } from "../log.js";
 import { safeEqual } from "../token.js";
-import type { Session } from "../sessions.js";
-import { callTool, closeSession, TOOL_DEFINITIONS, type ToolContext } from "./tools.js";
+import { createProtocolServer } from "./protocol.js";
+import type { ToolContext } from "./tools.js";
+
+export { SERVER_INSTRUCTIONS } from "./protocol.js";
 
 export interface McpHttpOptions extends ToolContext {
   readonly token: string;
@@ -58,46 +59,6 @@ function bearer(req: IncomingMessage): string | null {
   if (!header) return null;
   const m = /^Bearer\s+(.+)$/i.exec(header.trim());
   return m ? m[1].trim() : null;
-}
-
-export const SERVER_INSTRUCTIONS = [
-  "TabCrew drives the user's real browser (Chrome). Each agent or subagent opens its own session with session_open and passes the handle on every call.",
-  "Prefer browse for multi-step goals, observe/act for precise control, read_text for long content. browse's DONE is a claim: verify the page.",
-  "When your task is finished, close any throwaway tabs with tab_close, then call session_close: your remaining tabs stay open for the user to review in their own window, and you no longer control them. Sessions left open are handed over the same way when your connection ends or after they sit idle.",
-].join(" ");
-
-/**
- * One MCP protocol server per MCP session; all share the same browser-session registry. Browser
- * sessions opened over this connection are ended when the connection closes: their tabs are handed
- * to the user (stopped sessions' tabs are left as they are).
- */
-function createProtocolServer(opts: McpHttpOptions, isShuttingDown: () => boolean): Server {
-  const server = new Server(
-    { name: "tabcrew", version: opts.version },
-    { capabilities: { tools: {} }, instructions: SERVER_INSTRUCTIONS },
-  );
-  const opened = new Set<Session>();
-  const ctx: McpHttpOptions = { ...opts, onSessionOpened: (session) => opened.add(session) };
-  server.onclose = () => {
-    // A daemon restart closes every connection too; agents' sessions must survive that.
-    if (isShuttingDown()) return;
-    for (const session of opened) {
-      void closeSession(opts, session, !session.stopped)
-        .then((r) => {
-          if (r.closed) log.info(`session ${session.short_id} ended (MCP connection ended; ${r.kept_tabs} tab(s) handed to the user)`);
-        })
-        .catch(() => {});
-    }
-    opened.clear();
-  };
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOL_DEFINITIONS }));
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
-    const started = performance.now();
-    const result = await callTool(ctx, request.params.name, request.params.arguments);
-    log.debug(`tool ${request.params.name} ${Math.round(performance.now() - started)} ms${result.isError ? " error" : ""}`);
-    return result;
-  });
-  return server;
 }
 
 export class McpHttpServer {
@@ -195,7 +156,7 @@ export class McpHttpServer {
         transport.onclose = () => {
           if (transport.sessionId) this.transports.delete(transport.sessionId);
         };
-        await createProtocolServer(this.opts, () => this.shuttingDown).connect(transport);
+        await createProtocolServer(this.opts, this.opts.version, () => this.shuttingDown).connect(transport);
         await transport.handleRequest(req, res, body);
         return;
       }

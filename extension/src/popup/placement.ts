@@ -1,4 +1,4 @@
-import { loadPlacement, parsePlacement, savePlacement } from "../config.js";
+import { loadPlacement, parsePlacement, savePlacement, type Placement } from "../config.js";
 
 /** The bits of an `<input type="radio">` the placement setting uses. */
 export interface RadioLike {
@@ -8,15 +8,20 @@ export interface RadioLike {
 }
 
 /**
- * Check the radio matching the stored placement and persist the user's choice on change. The
- * setting only applies to sessions that have not created a tab yet.
+ * Check the radio matching the stored placement and persist the user's choice on change (then
+ * report it to `onChange`). Returns the stored placement. The setting only applies to sessions
+ * that have not created a tab yet.
  */
-export async function bindPlacementRadios(radios: readonly RadioLike[]): Promise<void> {
+export async function bindPlacementRadios(radios: readonly RadioLike[], onChange?: (placement: Placement) => void): Promise<Placement> {
   const current = await loadPlacement();
   for (const radio of radios) {
     radio.checked = radio.value === current;
     radio.addEventListener("change", () => {
-      if (radio.checked) void savePlacement(parsePlacement(radio.value));
+      if (!radio.checked) return;
+      const placement = parsePlacement(radio.value);
+      void savePlacement(placement);
+      onChange?.(placement);
     });
   }
+  return current;
 }

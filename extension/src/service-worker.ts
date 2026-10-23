@@ -1,16 +1,30 @@
 /**
- * TabCrew service worker: wires the daemon bridge relay, session tab groups, and CDP.
+ * TabCrew service worker: wires the daemon bridge relay, session tabs (shared TabCrew window and
+ * groups, per-tab ownership; see tabs.ts), and CDP.
  * The daemon WebSocket itself lives in the offscreen document (see offscreen/), so a blocked
  * socket cannot stall request handling here.
+ * Hub mode (auto without a daemon token, or the "hub" override): the pin lives in chrome.storage
+ * here and is pushed to the offscreen bridge; model calls from the hub run here.
  * All Chrome listeners are registered synchronously at top level (MV3 requirement).
  */
 
-import type { V2SettingsView } from "@tabcrew/shared/v2";
+import { v2IsFinishMode, type V2SettingsView } from "@tabcrew/shared/v2";
 import { CdpManager } from "./cdp.js";
 import {
+  HUB_PIN_KEY,
+  MODE_KEY,
   PORT_KEY,
   TOKEN_KEY,
+  confirmHubPin,
+  connectionStatus,
+  ensureHubPin,
+  legacyPopupStatus,
   loadConfig,
+  loadFinishMode,
+  loadGroupName,
+  resetHubPin,
+  saveFinishMode,
+  saveGroupName,
   type PopupActionResult,
   type PopupCloseResult,
   type PopupRequest,
@@ -22,12 +36,20 @@ import { ensureOffscreenDocument } from "./offscreen-client.js";
 import { handleRequest } from "./ops.js";
 import { Pairing } from "./pairing.js";
 import { BRIDGE_PORT_NAME } from "./relay-protocol.js";
+import { handleModelCall } from "./model/proxy.js";
 import { BridgeRelay } from "./relay.js";
 import { PageController } from "./snapshot/controller.js";
 import { StoppedSessions } from "./stopped.js";
 import { TabManager } from "./tabs.js";
 
 const KEEPALIVE_ALARM = "v2-bridge-keepalive";
+
+/** The config for the offscreen bridge: in hub mode a pin always exists (created on first use). */
+async function loadBridgeConfig() {
+  const config = await loadConfig();
+  if (config.mode === "hub" && !config.hubPin) return { ...config, hubPin: await ensureHubPin() };
+  return config;
+}
 
 const cdp = new CdpManager();
 const page = new PageController({
@@ -40,22 +62,38 @@ const pairing = new Pairing({
   loadToken: async () => (await loadConfig()).token,
   // Fires storage.onChanged, which pushes the new token to the offscreen bridge.
   saveToken: (token) => chrome.storage.local.set({ [TOKEN_KEY]: token }),
+  loadModeSetting: async () => (await loadConfig()).modeSetting,
 });
 const tabs = new TabManager((event) => {
   bridge.sendEvent(event);
 });
+/** A finished session's tab goes back to the user: no debugger, no cached snapshot. */
+const releaseTab = async (tabId: number) => {
+  await cdp.detach(tabId);
+  page.forget(tabId);
+};
 const bridge: BridgeRelay = new BridgeRelay({
-  loadConfig,
+  loadConfig: loadBridgeConfig,
   ensureOffscreen: ensureOffscreenDocument,
   handleRequest: (req) => handleRequest(req, { tabs, cdp, page }),
-  onWelcome: async () => {
-    const groups = await tabs.reconcile();
+  onWelcome: async (welcome) => {
+    // Sessions the service no longer knows are finished with the user's default mode.
+    const sessions = Array.isArray(welcome?.sessions) ? welcome.sessions : undefined;
+    const groups = await tabs.reconcile(sessions, releaseTab);
     bridge.sendEvent({ type: "event", event: "groups", groups });
   },
   onStatus: (status) => {
     // The daemon rejected the stored token: its token may have changed, so ask the host once.
-    if (status === "unauthorized") void loadConfig().then((config) => pairing.repair(config.token)).catch(() => false);
+    if (status === "unauthorized") {
+      void loadConfig()
+        .then((config) => (config.mode === "daemon" ? pairing.repair(config.token) : false))
+        .catch(() => false);
+    }
   },
+  // Hub mode: the popup's model provider settings; the key never leaves the extension.
+  handleModelCall,
+  // Fires storage.onChanged, which re-pushes the (now confirmed) pin without forcing a reconnect.
+  onHubPinStored: async (secret) => void (await confirmHubPin(secret)),
 });
 
 /** Pair if needed, then make sure the bridge is up. */
@@ -96,13 +134,26 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
 });
 
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === "local" && (TOKEN_KEY in changes || PORT_KEY in changes)) void bridge.pushConfig(true);
+  if (area !== "local") return;
+  if (TOKEN_KEY in changes || PORT_KEY in changes || MODE_KEY in changes) {
+    void bridge.pushConfig(true);
+    // A mode switch to daemon mode may need pairing.
+    if (MODE_KEY in changes) void pairing.ensurePaired().catch(() => undefined);
+  } else if (HUB_PIN_KEY in changes) {
+    // The offscreen bridge reconnects only if the secret changed ("Trust this hub"), not for a confirmation.
+    void bridge.pushConfig(false);
+  }
 });
 
 chrome.runtime.onConnect.addListener((port) => {
   if (port.name === BRIDGE_PORT_NAME) bridge.attach(port);
 });
-chrome.runtime.onStartup.addListener(() => ensureBridge());
+chrome.runtime.onStartup.addListener(() => {
+  // Tab, group and window ids did not survive the browser restart: old TabCrew tabs become the
+  // user's (fail closed). Every state load waits for this wipe.
+  void tabs.handleStartup().catch((err) => console.warn("[v2] ownership wipe failed:", err));
+  ensureBridge();
+});
 chrome.runtime.onInstalled.addListener(() => ensureBridge());
 
 chrome.alarms.onAlarm.addListener((alarm) => {
@@ -120,19 +171,57 @@ chrome.runtime.onMessage.addListener((message: PopupRequest, _sender, sendRespon
         .then((sessions) => stopped.annotate(sessions))
         .catch(() => []),
       tabs.listFinished().catch(() => []),
-    ]).then(([config, sessions, finished]) => {
-      const unpaired = config.token === null && pairing.lastError !== null;
+      tabs.popupGroups().catch(() => []),
+      loadGroupName(),
+      loadFinishMode(),
+    ]).then(([config, sessions, finished, groups, group_name, finish_mode]) => {
+      const unpaired = config.mode === "daemon" && config.token === null && pairing.lastError !== null;
+      const connection = connectionStatus(config.mode, unpaired ? "not_paired" : bridge.status);
       const state: PopupState = {
-        status: unpaired ? "not_paired" : bridge.status,
+        status: legacyPopupStatus(connection),
+        connection,
+        mode: config.mode,
+        mode_setting: config.modeSetting,
+        hub_pinned: config.hubPin?.confirmed === true,
         port: config.port,
         token_set: config.token !== null,
         pairing_error: unpaired ? pairing.lastError : null,
         sessions,
         finished,
         service: bridge.status === "connected" ? bridge.service : null,
+        groups,
+        group_name,
+        finish_mode,
       };
       sendResponse(state);
     });
+    return true;
+  }
+  // Shared groups settings and TabCrew groups (never the user's own groups).
+  if (message?.type === "v2:rename_group") {
+    void popupAction(() => tabs.renameGroupById(message.group_id, message.name)).then(sendResponse);
+    return true;
+  }
+  if (message?.type === "v2:create_group") {
+    void popupAction(() => tabs.createGroup(message.name)).then(sendResponse);
+    return true;
+  }
+  if (message?.type === "v2:set_group_name") {
+    void popupAction(async () => {
+      if ((await saveGroupName(message.name)) === null) throw new Error("not a valid group name");
+    }).then(sendResponse);
+    return true;
+  }
+  if (message?.type === "v2:set_finish_mode") {
+    void popupAction(async () => {
+      if (!v2IsFinishMode(message.mode)) throw new Error("finish mode must be keep, close or collect");
+      await saveFinishMode(message.mode);
+    }).then(sendResponse);
+    return true;
+  }
+  if (message?.type === "v2:trust_hub") {
+    // Fires storage.onChanged: the offscreen bridge reconnects handing the new secret to the hub.
+    void popupAction(async () => void (await resetHubPin())).then(sendResponse);
     return true;
   }
   if (message?.type === "v2:stop") {
