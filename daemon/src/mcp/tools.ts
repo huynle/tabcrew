@@ -1,4 +1,13 @@
-import type { V2ConsoleEntry, V2NetworkEntry } from "@tabcrew/shared/v2";
+import {
+  V2_DEFAULT_GROUP_NAME,
+  V2_FINISH_MODES,
+  V2_GROUP_NAME_MAX_LENGTH,
+  v2IsFinishMode,
+  v2NormaliseGroupName,
+  type V2ConsoleEntry,
+  type V2FinishMode,
+  type V2NetworkEntry,
+} from "@tabcrew/shared/v2";
 import type { CallToolResult, Tool } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import type { ExtensionBridge } from "../bridge.js";
@@ -50,8 +59,10 @@ export const LOGS_DEFAULT = 50;
 export const LOGS_MAX = 200;
 
 const schemas = {
-  session_open: z.object({ label: z.string().max(200).optional() }),
-  session_close: z.object({ session: sessionArg }),
+  session_open: z.object({ label: z.string().max(200).optional(), group: z.string().max(200).optional() }),
+  session_close: z.object({ session: sessionArg, tabs: z.enum(V2_FINISH_MODES).optional() }),
+  group_rename: z.object({ session: sessionArg, name: z.string().max(200), group: z.string().max(200).optional() }),
+  group_list: z.object({ session: sessionArg }),
   tab_create: z.object({ session: sessionArg, url: urlArg.optional() }),
   tab_list: z.object({ session: sessionArg }),
   tab_close: z.object({ session: sessionArg, tab_id: tabIdArg }),
@@ -104,21 +115,59 @@ type ToolName = keyof typeof schemas;
 
 const sessionProp = { type: "string", description: SESSION_HINT } as const;
 const tabIdProp = { type: "integer", minimum: 0, description: "Tab id from tab_create or tab_list." } as const;
+const GROUP_NAME_RULES = `1-${V2_GROUP_NAME_MAX_LENGTH} characters, not starting with "✓ "`;
 
 export const TOOL_DEFINITIONS: Tool[] = [
   {
     name: "session_open",
     description:
-      "Open a private browser session and get its handle. Open one session per agent or subagent, pass the handle on every call, and never share it. When your task is finished, call session_close: your tabs stay open for the user to review in their window (close any throwaway tabs first with tab_close).",
+      `Open a private browser session and get its handle. Open one session per agent or subagent, pass the handle on every call, and never share it. Your tabs open in one TabCrew window, in a tab group shared by all agents ("${V2_DEFAULT_GROUP_NAME}" unless the user renamed it); you only see and control your own tabs there. Pass group to join or create a named TabCrew group instead. When your task is finished, call session_close (close any throwaway tabs first with tab_close): by default your tabs are left for the user to review.`,
     inputSchema: {
       type: "object",
-      properties: { label: { type: "string", description: "Short name shown on the tab group, e.g. your task." } },
+      properties: {
+        label: { type: "string", description: "Short name for your session, e.g. your task." },
+        group: {
+          type: "string",
+          description: `Name of the TabCrew tab group to join, created if missing (${GROUP_NAME_RULES}). Default: the shared "${V2_DEFAULT_GROUP_NAME}" group.`,
+        },
+      },
     },
   },
   {
     name: "session_close",
     description:
-      "Finish your session and hand its tabs to the user for review: they stay open, move into the user's window as a collapsed group, and you no longer control them. Close any throwaway tabs first with tab_close. Call this as soon as you are done with the browser; do not leave sessions open.",
+      `Finish your session and hand its tabs to the user for review; you no longer control them afterwards. tabs picks what happens to them: "keep" leaves them in their TabCrew group, marked finished; "close" closes them; "collect" moves them into one collapsed "✓ ${V2_DEFAULT_GROUP_NAME}" group of finished tabs. Omit tabs to use the user's choice from the TabCrew popup (normally "keep"). Close any throwaway tabs first with tab_close. Call this as soon as you are done with the browser; do not leave sessions open.`,
+    inputSchema: {
+      type: "object",
+      properties: {
+        session: sessionProp,
+        tabs: {
+          type: "string",
+          enum: [...V2_FINISH_MODES],
+          description: "What happens to your tabs. Default: the user's choice in the TabCrew popup.",
+        },
+      },
+      required: ["session"],
+    },
+  },
+  {
+    name: "group_rename",
+    description:
+      "Rename a TabCrew tab group: your own group by default, or the TabCrew group named in group (see group_list). Every agent in that group keeps its tabs and keeps working; the user's own tab groups are never touched. Returns the new and the previous name.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        session: sessionProp,
+        name: { type: "string", description: `New group name (${GROUP_NAME_RULES}).` },
+        group: { type: "string", description: "Current name of the TabCrew group to rename. Default: your own group." },
+      },
+      required: ["session", "name"],
+    },
+  },
+  {
+    name: "group_list",
+    description:
+      "List the names of the TabCrew tab groups, with mine: true for the group your session is in. The user's own groups and other agents' tabs are never listed.",
     inputSchema: { type: "object", properties: { session: sessionProp }, required: ["session"] },
   },
   {
@@ -161,7 +210,7 @@ export const TOOL_DEFINITIONS: Tool[] = [
   {
     name: "observe",
     description:
-      "For precise step-by-step control. Read one of your tabs: URL, title, visible text, a numbered element table (each element lists the operations it supports; selects list options as \"<index>:<n>\"), available controls, and a fingerprint to pass to act.",
+      "For precise step-by-step control. Read one of your tabs: URL, title, visible text, a numbered element table (each element lists the operations it supports; selects list options as \"<index>:<n>\"), available controls, and a fingerprint to pass to act. Scroll controls for an open dialog or a scrollable panel carry a target like \"s1\"; while a modal dialog is open, the table and text cover the dialog, not the page behind it.",
     inputSchema: {
       type: "object",
       properties: { session: sessionProp, tab_id: tabIdProp },
@@ -171,7 +220,7 @@ export const TOOL_DEFINITIONS: Tool[] = [
   {
     name: "act",
     description:
-      "Do one operation on a tab, using the fingerprint and element indices from your latest observe of that tab. CLICK/TYPE_TEXT take an element index, SELECT takes an option index like \"3:2\", SCROLL_UP/SCROLL_DOWN/WAIT take no target. Returns stale_page (nothing done) if the page changed. Always observe again after act.",
+      "Do one operation on a tab, using the fingerprint and element indices from your latest observe of that tab. CLICK/TYPE_TEXT take an element index, SELECT takes an option index like \"3:2\", SCROLL_UP/SCROLL_DOWN take the target of a listed scroll control (\"s1\" for a dialog or panel, \"page\") or no target for the first listed one, WAIT takes no target. Targets are scrolled into view before they are clicked or typed into. Returns stale_page (nothing done) if the page changed. Always observe again after act.",
     inputSchema: {
       type: "object",
       properties: {
@@ -181,7 +230,8 @@ export const TOOL_DEFINITIONS: Tool[] = [
         operation: { type: "string", enum: [...OPERATIONS] },
         target: {
           type: ["string", "integer"],
-          description: "Element index (CLICK, TYPE_TEXT) or option index like \"3:2\" (SELECT).",
+          description:
+            "Element index (CLICK, TYPE_TEXT), option index like \"3:2\" (SELECT), or scroll target like \"s1\" / \"page\" (SCROLL_UP, SCROLL_DOWN; omit for the first listed).",
         },
         text: { type: "string", maxLength: MAX_TYPE_TEXT, description: "Text to enter; required for TYPE_TEXT." },
       },
@@ -292,33 +342,79 @@ function onSession<T>(ctx: ToolContext, session: Session, fn: () => Promise<T>):
   });
 }
 
+/** Legacy hand-over (extensions without shared groups): the group moved into the user's window. */
 export const HANDED_OVER_NOTE = "Your tabs were handed to the user for review; you no longer control them.";
+
+const FINISH_NOTES: Record<V2FinishMode, string> = {
+  keep: "Your tabs stay in their TabCrew group, marked finished, for the user to review; you no longer control them.",
+  close: "Your tabs were closed; you no longer control this session.",
+  collect: `Your tabs were moved into the collapsed group of finished tabs ("✓ ${V2_DEFAULT_GROUP_NAME}" by default) for the user to review; you no longer control them.`,
+};
+
+/** The note session_close returns for the finish mode applied (legacy hand-over when unknown). */
+export function handedOverNote(mode?: V2FinishMode): string {
+  return mode ? FINISH_NOTES[mode] : HANDED_OVER_NOTE;
+}
+
+export const GROUPS_IGNORED_NOTE =
+  "The connected TabCrew extension does not support named tab groups, so group is ignored for now; ask the user to update the TabCrew extension.";
+
+const GROUP_NAME_HINT = `must be ${GROUP_NAME_RULES}, without control characters, and not shaped like "<label> · <8-char id>"`;
+
+/** A valid group name from an agent, or `invalid_args` naming the field. */
+function groupNameArg(field: "group" | "name", raw: string): string {
+  const name = v2NormaliseGroupName(raw);
+  if (name === null) throw new DaemonError("invalid_args", `${field}: ${GROUP_NAME_HINT}`);
+  return name;
+}
 
 export interface CloseResult {
   closed: boolean;
   kept_tabs: number;
   moved?: boolean;
+  closed_tabs?: number;
+  mode?: V2FinishMode;
   note?: string;
   tabs_left_open?: number;
 }
 
+const count = (value: unknown): number => (Number.isInteger(value) && (value as number) >= 0 ? (value as number) : 0);
+
 /**
- * Forget a session now (later calls get bad_session, queued work is rejected), then hand its tabs
- * to the user (`session_release`) after any in-flight session-level op. Tabs are never closed.
- * `handOver: false` (stopped sessions) leaves them exactly where they are.
+ * Forget a session now (later calls get bad_session, queued work is rejected), then finish its
+ * tabs (`session_release` with the agent's finish mode, or the user's default when `tabs` is
+ * missing) after any in-flight session-level op. `release: false` (stopped sessions) leaves them
+ * exactly where they are. Extensions without shared groups get the legacy ops: `session_close`
+ * for tabs "close", otherwise `session_release` (hand over into the user's window).
  */
-export async function closeSession(ctx: ToolContext, session: Session, handOver = true): Promise<CloseResult> {
+export async function closeSession(ctx: ToolContext, session: Session, release = true, tabs?: V2FinishMode): Promise<CloseResult> {
   const { registry, scheduler, observations, bridge } = ctx;
   const ref = sessionRef(session);
   const owned = session.tabs.size;
   if (!registry.close(session)) return { closed: false, kept_tabs: 0 };
   scheduler.dropSession(ref.short_id, new DaemonError("bad_session", "session was closed"));
   observations.forgetSession(ref.short_id);
-  if (!handOver) return { closed: true, kept_tabs: 0, tabs_left_open: owned };
-  return scheduler.runSession(ref.short_id, async () => {
+  if (!release) return { closed: true, kept_tabs: 0, tabs_left_open: owned };
+  return scheduler.runSession(ref.short_id, async (): Promise<CloseResult> => {
     if (!bridge.connected) return { closed: true, kept_tabs: 0, tabs_left_open: owned };
-    const result = await bridge.request(ref, "session_release", {});
-    return { closed: true, kept_tabs: result.kept_tabs, moved: result.moved, note: HANDED_OVER_NOTE };
+    if (!bridge.supportsGroups) {
+      if (tabs === "close") {
+        const result = await bridge.request(ref, "session_close", {});
+        return { closed: true, kept_tabs: 0, closed_tabs: count(result?.closed_tabs), mode: "close", note: handedOverNote("close") };
+      }
+      const result = await bridge.request(ref, "session_release", {});
+      return { closed: true, kept_tabs: result.kept_tabs, moved: result.moved, note: HANDED_OVER_NOTE };
+    }
+    const result = await bridge.request(ref, "session_release", tabs ? { tabs } : {});
+    const mode = v2IsFinishMode(result?.mode) ? result.mode : tabs;
+    return {
+      closed: true,
+      kept_tabs: count(result?.kept_tabs),
+      moved: result?.moved === true,
+      ...(result?.closed_tabs !== undefined && { closed_tabs: count(result.closed_tabs) }),
+      ...(mode && { mode }),
+      note: handedOverNote(mode),
+    };
   });
 }
 
@@ -327,17 +423,49 @@ async function dispatch(ctx: ToolContext, name: ToolName, rawArgs: unknown): Pro
   switch (name) {
     case "session_open": {
       const args = parseArgs(name, rawArgs);
-      const { handle, session } = registry.open(args.label);
+      const group = args.group === undefined ? undefined : groupNameArg("group", args.group);
+      const { handle, session } = registry.open(args.label, group);
       ctx.onSessionOpened?.(session);
       log.info(`session ${session.short_id} opened`);
-      return ok({ session: handle, short_id: session.short_id, label: session.label });
+      return ok({
+        session: handle,
+        short_id: session.short_id,
+        label: session.label,
+        ...(session.group !== undefined && { group: session.group }),
+        ...(session.group !== undefined && bridge.connected && !bridge.supportsGroups && { note: GROUPS_IGNORED_NOTE }),
+      });
     }
     case "session_close": {
       const args = parseArgs(name, rawArgs);
       const session = registry.use(args.session);
-      const result = await closeSession(ctx, session);
+      const result = await closeSession(ctx, session, true, args.tabs);
       log.info(`session ${session.short_id} closed`);
       return ok(result);
+    }
+    case "group_rename": {
+      const args = parseArgs(name, rawArgs);
+      const session = registry.use(args.session);
+      const newName = groupNameArg("name", args.name);
+      const target = args.group === undefined ? undefined : groupNameArg("group", args.group);
+      const renamed = await onSession(ctx, session, async () => {
+        const result = await bridge.request(sessionRef(session), "group_rename", target ? { group: target, name: newName } : { name: newName });
+        const applied = v2NormaliseGroupName(result?.name) ?? newName;
+        const previous = typeof result?.previous === "string" ? result.previous : (target ?? "");
+        // Later refs carry the new name; the caller follows its own group even if it used the default.
+        registry.renameGroup(previous, applied, target === undefined ? session : undefined);
+        return { name: applied, previous };
+      });
+      log.info(`session ${session.short_id} renamed a TabCrew group`);
+      return ok(renamed);
+    }
+    case "group_list": {
+      const args = parseArgs(name, rawArgs);
+      const session = registry.use(args.session);
+      const listed = await onSession(ctx, session, () => bridge.request(sessionRef(session), "group_list", {}));
+      const groups = (Array.isArray(listed?.groups) ? listed.groups : [])
+        .filter((g): g is { name: string; mine: boolean } => !!g && typeof g.name === "string")
+        .map((g) => ({ name: g.name.slice(0, 200), mine: g.mine === true }));
+      return ok({ groups });
     }
     case "tab_create": {
       const args = parseArgs(name, rawArgs);

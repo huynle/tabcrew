@@ -24,7 +24,7 @@ After changing `extension/`, rebuild and reload the unpacked extension (`extensi
 - Update `README.md` when behavior, setup, configuration, or tool inputs change.
 - Add or update tests for behavior changes. Unit tests must not open a browser or call a paid API.
 - Run `just verify` before opening the PR.
-- Mention which live checks you ran (`just smoke`, `just isolation`, `just guards`, `just concurrency`, `just live`).
+- Mention which live checks you ran (`just smoke`, `just isolation`, `just guards`, `just page-check`, `just concurrency`, `just live`). Run `just page-check` after changing the page scripts in `extension/src/snapshot/`.
 
 ## Code Layout
 

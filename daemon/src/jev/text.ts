@@ -1,7 +1,18 @@
 import type { V2Action } from "@tabcrew/shared/v2";
 import { DaemonError } from "../errors.js";
 import { MAX_TYPE_TEXT } from "../observe.js";
-import { MISSING_KEY_MESSAGE, OPENROUTER_URL, postJson, type HistoryEntry, type ModelSettings, type PageState } from "./decisions.js";
+import {
+  httpTransport,
+  MISSING_KEY_MESSAGE,
+  notConfiguredError,
+  OPENROUTER_URL,
+  parseCost,
+  sendModel,
+  viaExtension,
+  type HistoryEntry,
+  type ModelSettings,
+  type PageState,
+} from "./decisions.js";
 import { TEXT_VALUE } from "./questions.js";
 
 const INVALID_TEXT = "Text helper returned no valid field value; nothing typed.";
@@ -60,8 +71,12 @@ export interface FieldText {
   readonly cost: number;
 }
 
+/** Hub mode per-attempt text budget: the call also crosses the extension (and may wake its service worker). */
+export const HUB_TEXT_TIMEOUT_MS = 8_000;
+
 /** Ask the text helper for the value of one field. Throws `model_error`; nothing is typed on failure. */
 export async function fieldText(context: FieldContext, settings: ModelSettings): Promise<FieldText> {
+  if (viaExtension(settings)) return hubFieldText(context, settings);
   const key = settings.textModelApiKey || settings.openrouterApiKey;
   if (!key) throw new DaemonError("model_error", MISSING_KEY_MESSAGE);
   const models = [settings.textModel];
@@ -80,6 +95,47 @@ export async function fieldText(context: FieldContext, settings: ModelSettings):
   throw lastError;
 }
 
+function textMessages(context: FieldContext) {
+  return [
+    { role: "system", content: TEXT_VALUE },
+    { role: "user", content: JSON.stringify(context) },
+  ];
+}
+
+function textReplyOf(json: unknown): { text: string; cost: number } {
+  const result = json as { choices?: { message?: { content?: unknown } }[]; usage?: unknown } | null;
+  return { text: parseTextReply(result?.choices?.[0]?.message?.content), cost: parseCost(result?.usage) };
+}
+
+/**
+ * Hub mode: purpose `text`, then once `text_fallback`. The extension owns both models; it answers
+ * `model_not_configured` for a purpose it has no model for, which for the fallback means "none" and
+ * surfaces the first error instead.
+ */
+async function hubFieldText(context: FieldContext, settings: ModelSettings): Promise<FieldText> {
+  const options = { retryBaseMs: settings.retryBaseMs, timeoutMs: settings.textModelTimeoutMs ?? HUB_TEXT_TIMEOUT_MS };
+  const body = { messages: textMessages(context), max_tokens: 1024, response_format: { type: "json_object" } };
+  const started = performance.now();
+  const ask = async (purpose: "text" | "text_fallback"): Promise<FieldText> => {
+    const sent = await sendModel(settings.transport!, { purpose, body }, options);
+    const { text, cost } = textReplyOf(sent.json);
+    return { text, model: sent.model ?? purpose, text_ms: Math.round(performance.now() - started), cost };
+  };
+  let firstError: unknown;
+  try {
+    return await ask("text");
+  } catch (err) {
+    firstError = err;
+  }
+  // Generating text is not a browser mutation, so one fallback attempt is safe: nothing has been typed yet.
+  try {
+    return await ask("text_fallback");
+  } catch (err) {
+    const noFallback = err instanceof DaemonError && err.code === "model_not_configured";
+    throw notConfiguredError(noFallback ? firstError : err);
+  }
+}
+
 async function askTextModel(
   model: string,
   key: string,
@@ -87,22 +143,20 @@ async function askTextModel(
   settings: ModelSettings,
 ): Promise<{ text: string; cost: number }> {
   const base = (settings.textModelBaseUrl ?? OPENROUTER_URL).replace(/\/+$/, "");
-  const result = (await postJson(
-    `${base}/chat/completions`,
-    key,
+  const sent = await sendModel(
+    settings.transport ?? httpTransport,
     {
-      model,
-      max_tokens: 1024,
-      response_format: { type: "json_object" },
-      ...reasoningFor(`${base}/`, settings.textModelReasoning),
-      messages: [
-        { role: "system", content: TEXT_VALUE },
-        { role: "user", content: JSON.stringify(context) },
-      ],
+      url: `${base}/chat/completions`,
+      key,
+      body: {
+        model,
+        max_tokens: 1024,
+        response_format: { type: "json_object" },
+        ...reasoningFor(`${base}/`, settings.textModelReasoning),
+        messages: textMessages(context),
+      },
     },
     { retryBaseMs: settings.retryBaseMs, timeoutMs: settings.textModelTimeoutMs ?? 3_000 },
-  )) as { choices?: { message?: { content?: unknown } }[]; usage?: { cost?: unknown } } | null;
-  const text = parseTextReply(result?.choices?.[0]?.message?.content);
-  const cost = result?.usage?.cost;
-  return { text, cost: typeof cost === "number" && Number.isFinite(cost) ? cost : 0 };
+  );
+  return textReplyOf(sent.json);
 }

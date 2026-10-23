@@ -1,25 +1,17 @@
 #!/usr/bin/env node
-// Live smoke test against a running daemon + the TabCrew extension. No model calls.
+// Live smoke test against a running daemon (or hub) + the TabCrew extension. No model calls.
 // Covers sessions/tabs/isolation/screenshot plus navigate, read_text and debug_logs.
-// Usage: node daemon/scripts/smoke.mjs [--keep-open] [--out DIR]
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+// Usage: [TABCREW_TRANSPORT=shim] node daemon/scripts/smoke.mjs [--keep-open] [--out DIR]
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { connect, describeTransport } from "./connect.mjs";
 
-const home = process.env.TABCREW_HOME ?? process.env.CHROMEUSE_HOME ?? join(homedir(), ".tabcrew");
-const port = process.env.TABCREW_MCP_PORT ?? process.env.CHROMEUSE_MCP_PORT ?? "8770";
 const keepOpen = process.argv.includes("--keep-open");
 const outIdx = process.argv.indexOf("--out");
 const out = outIdx > 0 ? process.argv[outIdx + 1] : null;
-const token = readFileSync(join(home, "token"), "utf8").trim();
 
-const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`), {
-  requestInit: { headers: { Authorization: `Bearer ${token}` } },
-});
-const client = new Client({ name: "tabcrew-smoke", version: "0.0.0" });
-await client.connect(transport);
+console.log(describeTransport());
+const client = await connect("tabcrew-smoke");
 
 const results = [];
 const check = (name, ok, detail = "") => {

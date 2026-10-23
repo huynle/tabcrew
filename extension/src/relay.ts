@@ -2,15 +2,25 @@
  * The service-worker side of the bridge. The daemon socket lives in the offscreen document; this
  * relay receives its requests over the `v2-bridge` port, runs them concurrently (no queue), and
  * posts responses and events back. It also mirrors the socket status for the popup.
+ *
+ * Hub mode: the pushed config carries the TOFU pin (never the daemon token); `model_call`s from the
+ * hub run through `RelayDeps.handleModelCall` here (the service worker holds the provider settings)
+ * and are answered with `model_result`.
  */
 
 import {
   V2_FEATURE_SETTINGS,
+  v2IsPinSecret,
+  v2ParseModelCall,
+  v2ParseModelResult,
   v2ServiceInfo,
+  type V2Error,
   type V2Event,
   type V2ExtOp,
   type V2ExtOpMap,
   type V2ExtResponse,
+  type V2ModelCall,
+  type V2ModelResult,
   type V2Request,
   type V2Response,
   type V2Welcome,
@@ -30,6 +40,18 @@ function serviceFrom(source: unknown): ServiceInfo {
   return { version: info.version, settings: info.features.includes(V2_FEATURE_SETTINGS) };
 }
 
+/** The answer to a hub `model_call` (the relay adds type and id). */
+export type ModelCallOutcome =
+  | { readonly ok: true; readonly result: { readonly status: number; readonly json: unknown; readonly model: string } }
+  | { readonly ok: false; readonly error: V2Error };
+
+export const MODEL_NOT_CONFIGURED_MESSAGE = "set a model provider in the TabCrew popup";
+
+/** The model_call handler until a provider proxy exists: every call is `model_not_configured`. */
+export async function modelNotConfigured(_call: V2ModelCall): Promise<ModelCallOutcome> {
+  return { ok: false, error: { code: "model_not_configured", message: MODEL_NOT_CONFIGURED_MESSAGE } };
+}
+
 interface PendingDaemonRequest {
   readonly resolve: (result: unknown) => void;
   readonly reject: (err: Error) => void;
@@ -45,6 +67,14 @@ export interface RelayDeps {
   ensureOffscreen(): Promise<void>;
   /** The offscreen socket status changed (e.g. to "unauthorized"). */
   onStatus?(status: BridgeStatus): void;
+  /**
+   * Hub mode: run a (sanitized) model call with the extension's provider settings. Default:
+   * `modelNotConfigured`. A throw becomes `model_error` with the error's message, so it must not
+   * contain the API key.
+   */
+  handleModelCall?(call: V2ModelCall): Promise<ModelCallOutcome>;
+  /** Hub mode: the hub stored this pin secret; mark the stored pin confirmed. */
+  onHubPinStored?(secret: string): Promise<void> | void;
 }
 
 export class BridgeRelay {
@@ -106,10 +136,17 @@ export class BridgeRelay {
     this.post({ type: "ensure" });
   }
 
-  /** Send the current token/port to the offscreen document. `reconfigure` forces a reconnect. */
+  /**
+   * Send the current config to the offscreen document. `reconfigure` forces a reconnect. Hub mode
+   * sends the pin and never the daemon token; daemon mode keeps the pre-hub message shape.
+   */
   async pushConfig(reconfigure: boolean): Promise<void> {
     const config = await this.deps.loadConfig();
-    this.post({ type: "config", token: config.token, port: config.port, reconfigure });
+    if (config.mode === "hub") {
+      this.post({ type: "config", token: null, port: config.port, reconfigure, mode: "hub", hub_pin: config.hubPin ?? null });
+    } else {
+      this.post({ type: "config", token: config.token, port: config.port, reconfigure });
+    }
   }
 
   /** Send an unsolicited event. Dropped (returns false) if not connected; the daemon resyncs via `groups`. */
@@ -194,6 +231,16 @@ export class BridgeRelay {
         break;
       case "keepalive":
         break;
+      case "model_call":
+        void this.dispatchModelCall(message.call);
+        break;
+      case "hub_pin_stored":
+        if (v2IsPinSecret(message.secret)) {
+          void Promise.resolve()
+            .then(() => this.deps.onHubPinStored?.(message.secret))
+            .catch((err) => console.warn("[v2 relay] storing the hub pin failed:", err));
+        }
+        break;
       default:
         console.warn("[v2 relay] unknown port message:", (message as { type?: unknown })?.type);
     }
@@ -218,6 +265,28 @@ export class BridgeRelay {
       }
     }
     this.post({ type: "frame", frame: response });
+  }
+
+  private async dispatchModelCall(raw: unknown): Promise<void> {
+    const call = v2ParseModelCall(raw);
+    if (!call) {
+      console.warn("[v2 relay] ignoring malformed model_call");
+      return;
+    }
+    let result: V2ModelResult;
+    try {
+      const outcome = await (this.deps.handleModelCall ?? modelNotConfigured)(call);
+      result = v2ParseModelResult({ ...outcome, type: "model_result", id: call.id }) ?? {
+        type: "model_result",
+        id: call.id,
+        ok: false,
+        error: { code: "model_error", message: "the model proxy returned an invalid result" },
+      };
+    } catch (err) {
+      const message = (err instanceof Error ? err.message : String(err)).slice(0, 500) || "model call failed";
+      result = { type: "model_result", id: call.id, ok: false, error: { code: "model_error", message } };
+    }
+    this.post({ type: "model_result", result });
   }
 
   private post(message: ToOffscreen): boolean {

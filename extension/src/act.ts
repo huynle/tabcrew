@@ -3,16 +3,19 @@
  *
  * Order: fingerprint must be the tab's latest snapshot → action must exist → freshness
  * (click/select: page key + that node's guard; others: the full marker) → re-resolve the node
- * and hit-test it → CDP input → settle wait → fresh snapshot. Nothing before input is a side
- * effect; once input dispatch has begun, any failure is `outcome_unknown`. Input is never
- * retried.
+ * and hit-test it (scrolling it into view first if it is off-screen, clipped or covered) → CDP
+ * input → settle wait → fresh snapshot. Page scroll is a wheel at the viewport centre; a scroll
+ * area (dialog, panel) is wheeled where the area itself receives it and scrolled by script if
+ * the wheel did not move it. Nothing before input is a side effect, except that revealing scroll,
+ * after which a failed check also drops the tab's snapshot; once input dispatch has begun, any
+ * failure is `outcome_unknown`. Input is never retried.
  */
 
 import type { V2ActResult } from "@tabcrew/shared/v2";
 import { OpError } from "./errors.js";
 import { evaluate, type PageController, type RawAction } from "./snapshot/controller.js";
 import { sameJson } from "./snapshot/fingerprint.js";
-import { guardSource, MARKER_SOURCE, settleSource, targetSource } from "./snapshot/scripts.js";
+import { guardSource, MARKER_SOURCE, scrolledSource, scrollPointSource, settleSource, targetSource } from "./snapshot/scripts.js";
 
 export interface ActArgs {
   fingerprint?: unknown;
@@ -24,7 +27,10 @@ export const WAIT_MS = 100;
 const MOD_CTRL = 2;
 const MOD_META = 4;
 
-type TargetResult = { x: number; y: number } | { error: "stale_page" | "target_invalid" | "target_covered"; message: string };
+type TargetError = "stale_page" | "target_invalid" | "target_covered";
+/** `revealed`: the check scrolled the target into view first (the page moved, nothing else happened). */
+type TargetResult = { x: number; y: number; revealed?: boolean } | { error: TargetError; message: string; revealed?: boolean };
+type ScrollPoint = { x: number | null; y?: number; top: number } | { error: TargetError; message: string };
 
 export async function runAct(page: PageController, tabId: number, args: ActArgs): Promise<V2ActResult> {
   if (typeof args.fingerprint !== "string" || !args.fingerprint) {
@@ -55,6 +61,19 @@ export async function runAct(page: PageController, tabId: number, args: ActArgs)
   try {
     if (action.kind === "wait") {
       await page.sleep(WAIT_MS);
+    } else if (action.kind === "scroll" && typeof action.node === "number") {
+      // A scrollable container (dialog, panel): wheel where the area itself receives it, then
+      // confirm it moved; the follow-up script scrolls it directly if the wheel did not.
+      const delta = action.delta ?? 0;
+      const point = await scrollPoint(page, tabId, action.node, delta);
+      if ("error" in point) throw new OpError(point.error, point.message);
+      dispatched = true;
+      const wheel = typeof point.x === "number" && typeof point.y === "number";
+      if (wheel) {
+        await send(tabId, "Input.dispatchMouseEvent", { type: "mouseWheel", x: point.x, y: point.y, deltaX: 0, deltaY: delta });
+      }
+      const moved = await evaluate(send, tabId, scrolledSource({ node: action.node, top: point.top, delta, wheel }), true);
+      if (!moved.ok) throw new Error(moved.reason);
     } else if (action.kind === "scroll") {
       const { w, h } = state.raw;
       dispatched = true;
@@ -72,6 +91,11 @@ export async function runAct(page: PageController, tabId: number, args: ActArgs)
       if ("error" in target) {
         // The script reports errors before mutating anything: nothing was executed.
         dispatched = false;
+        if (target.revealed) {
+          // It did scroll the target into view, so this observation no longer describes the page.
+          page.forget(tabId);
+          throw new OpError(target.error, `${target.message} (TabCrew scrolled it into view first; observe again.)`);
+        }
         throw new OpError(target.error, target.message);
       }
       if (action.kind !== "select") {
@@ -142,11 +166,22 @@ async function resolveTarget(page: PageController, tabId: number, action: RawAct
   if (typeof action.node !== "number" || (action.kind !== "click" && action.kind !== "fill" && action.kind !== "select")) {
     return { error: "target_invalid", message: "This action has no observed element." };
   }
-  const result = await evaluate(page.deps.send, tabId, targetSource({ node: action.node, kind: action.kind, value: action.value }));
+  // Awaited: the check may scroll the target into view and wait for the page to repaint.
+  const result = await evaluate(page.deps.send, tabId, targetSource({ node: action.node, kind: action.kind, value: action.value }), true);
   if (!result.ok) throw new Error(result.reason);
   const v = result.value as TargetResult | null;
   if (v && typeof v === "object" && "error" in v) return v;
   if (!v || typeof v.x !== "number" || typeof v.y !== "number") throw new Error("target check returned no position");
+  return v;
+}
+
+/** Read-only: where to wheel so the container itself scrolls (x null: nowhere), and its scrollTop now. */
+async function scrollPoint(page: PageController, tabId: number, node: number, delta: number): Promise<ScrollPoint> {
+  const result = await evaluate(page.deps.send, tabId, scrollPointSource({ node, delta }));
+  if (!result.ok) throw new Error(result.reason);
+  const v = result.value as ScrollPoint | null;
+  if (v && typeof v === "object" && "error" in v) return v;
+  if (!v || typeof v.top !== "number") throw new Error("scroll check returned no position");
   return v;
 }
 

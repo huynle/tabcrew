@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { DaemonError } from "./errors.js";
-import { actionSpace, ObservationCache, resolveAct, toObservation, type Operation } from "./observe.js";
-import { flightsSnapshot } from "./testing/fixtures.js";
+import { actionSpace, ObservationCache, resolveAct, scrollChoices, toObservation, type Operation } from "./observe.js";
+import { flightsSnapshot, modalSnapshot, panelsSnapshot } from "./testing/fixtures.js";
 
 function codeOf(fn: () => unknown): string | undefined {
   try {
@@ -98,6 +98,76 @@ describe("actionSpace", () => {
       expect((err as DaemonError).message).toContain("(40 total)");
       expect((err as DaemonError).message.length).toBeLessThan(200);
     }
+  });
+});
+
+describe("scroll areas", () => {
+  const ids = (space: ReturnType<typeof actionSpace>, op: Operation, target?: string | number) => resolveAct(space, op, target).action.id;
+
+  it("lists each area's scroll controls with an s<n> target; no target scrolls the first listed one", () => {
+    const space = actionSpace(modalSnapshot().actions);
+    expect(space.controls).toEqual([
+      { operation: "SCROLL_DOWN", label: 'Scroll down in "Provider settings" dialog', target: "s1" },
+      { operation: "WAIT", label: "Wait for the page to update" },
+    ]);
+    expect(ids(space, "SCROLL_DOWN")).toBe("scroll_down_1");
+    expect(ids(space, "SCROLL_DOWN", "s1")).toBe("scroll_down_1");
+    expect(ids(space, "SCROLL_DOWN", " S1 ")).toBe("scroll_down_1");
+    expect(resolveAct(space, "SCROLL_DOWN", "s1").target).toBe("s1");
+    expect(resolveAct(space, "SCROLL_DOWN", undefined).target).toBeNull();
+    expect(codeOf(() => resolveAct(space, "SCROLL_UP", undefined))).toBe("target_invalid");
+    expect(codeOf(() => resolveAct(space, "SCROLL_DOWN", "page"))).toBe("target_invalid");
+    expect(codeOf(() => resolveAct(space, "SCROLL_DOWN", 1))).toBe("target_invalid");
+    try {
+      resolveAct(space, "SCROLL_DOWN", 2);
+    } catch (err) {
+      expect((err as DaemonError).message).toContain("valid SCROLL_DOWN targets: s1");
+    }
+    const scrolled = actionSpace(modalSnapshot(true).actions);
+    expect(ids(scrolled, "SCROLL_UP", "s1")).toBe("scroll_up_1");
+    expect(scrolled.controls.map((c) => [c.operation, c.target])).toEqual([
+      ["SCROLL_DOWN", "s1"],
+      ["SCROLL_UP", "s1"],
+      ["WAIT", undefined],
+    ]);
+  });
+
+  it("without a modal the page stays first and untargeted; areas follow with their targets", () => {
+    const space = actionSpace(panelsSnapshot().actions);
+    expect(space.controls).toEqual([
+      { operation: "SCROLL_DOWN", label: "Scroll down" },
+      { operation: "SCROLL_DOWN", label: 'Scroll down in "Messages" panel', target: "s1" },
+      { operation: "SCROLL_DOWN", label: 'Scroll down in "Activity" panel', target: "s2" },
+      { operation: "SCROLL_UP", label: 'Scroll up in "Activity" panel', target: "s2" },
+      { operation: "WAIT", label: "Wait for the page to update" },
+    ]);
+    expect(ids(space, "SCROLL_DOWN")).toBe("scroll_down");
+    expect(ids(space, "SCROLL_DOWN", "page")).toBe("scroll_down");
+    expect(ids(space, "SCROLL_DOWN", "s2")).toBe("scroll_down_2");
+    expect(ids(space, "SCROLL_UP")).toBe("scroll_up_2");
+    expect(space.controlActions.get("SCROLL_DOWN")?.id).toBe("scroll_down");
+  });
+
+  it("a page listed after a modal's area gets the explicit target \"page\"", () => {
+    const actions = [
+      { id: "scroll_down_1", kind: "scroll" as const, node: 40, label: 'Scroll down in "Provider settings" dialog' },
+      { id: "scroll_down", kind: "scroll" as const, label: "Scroll down the page" },
+    ];
+    const space = actionSpace(actions);
+    expect(space.controls).toEqual([
+      { operation: "SCROLL_DOWN", label: 'Scroll down in "Provider settings" dialog', target: "s1" },
+      { operation: "SCROLL_DOWN", label: "Scroll down the page", target: "page" },
+    ]);
+    expect(ids(space, "SCROLL_DOWN")).toBe("scroll_down_1");
+    expect(ids(space, "SCROLL_DOWN", "page")).toBe("scroll_down");
+  });
+
+  it("scrollChoices lists only operations with more than one scroll target, in order", () => {
+    expect([...scrollChoices(actionSpace(flightsSnapshot().actions)).keys()]).toEqual([]);
+    expect([...scrollChoices(actionSpace(modalSnapshot().actions)).keys()]).toEqual([]);
+    const choices = scrollChoices(actionSpace(panelsSnapshot().actions));
+    expect([...choices.keys()]).toEqual(["SCROLL_DOWN"]);
+    expect([...choices.get("SCROLL_DOWN")!.keys()]).toEqual(["page", "s1", "s2"]);
   });
 });
 

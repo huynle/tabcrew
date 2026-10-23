@@ -18,11 +18,11 @@ Expect an acknowledgement within a week. Fixes are released as a new version and
 
 ## Threat model
 
-**Trusted:** the local machine and user account, the browser profile, and every MCP client that holds the daemon token.
+**Trusted:** the local machine and user account, the browser profile, and every MCP client that holds the daemon token (daemon mode) or can open the hub's Unix socket (hub mode).
 
 **Untrusted:** web pages (including pages agents visit), other local user accounts, other browser extensions, and anything arriving over the network.
 
-**Assets:** the user's signed-in browser sessions, page content, the daemon token, and the OpenRouter (model provider) API key.
+**Assets:** the user's signed-in browser sessions, page content, the daemon token (daemon mode), the hub pin (hub mode), and the model provider API key (OpenRouter in `~/.tabcrew/env` in daemon mode; the provider set in the popup, in `chrome.storage.local`, in hub mode).
 
 ### What protects them
 
@@ -40,7 +40,43 @@ Sessions:
 
 - Each agent's session handle is an unguessable secret; sessions can reach only their own tabs. Handed-over tabs leave the agent's control.
 
-Pairing host (`com.tabcrew.pair`, native messaging):
+Hub mode (`tabcrew mcp`; locked-down Chrome, no launchd, no native messaging, no `~/.tabcrew`):
+
+- **MCP authentication is file permissions.** The hub serves MCP only on a Unix socket, `hub.sock`, chmod 0600 as soon as it is created. The socket lives in a private runtime dir: on macOS `$(getconf DARWIN_USER_TEMP_DIR)tabcrew-<uid>`, on Linux `$XDG_RUNTIME_DIR/tabcrew` or `/tmp/tabcrew-<uid>`. The hub and the shim refuse that dir if it is a symlink, is owned by another user, or has any group/other permission bits; they create it as 0700. `hub.json`, `hub.log`, `hub.error` and `sessions.json` there are 0600. There is no token, no HTTP listener, and no CORS or browser exposure of MCP. Other local accounts can't connect. Any process running as the user can, which is the same trust as the daemon token file.
+- **The extension socket.** It binds to `127.0.0.1` (default port 8775). The WebSocket handshake is refused unless the `Origin` is exactly one of the known TabCrew extension IDs (compared after lowercasing and dropping trailing slashes; unlike daemon mode, an arbitrary `chrome-extension://` origin is not enough) and the `Host` is `127.0.0.1`, `localhost` or `[::1]`. This keeps web pages, sandboxed pages and other extensions out. A local native process can forge an `Origin` header, so the pin below is the real authentication.
+- **Trust-on-first-use pin with a mutual HMAC challenge** (spec in `shared/src/v2.ts`):
+  - *First pairing.* The extension generates a 32-byte secret and sends it in `hello`. The hub stores it in `hub-pin` (0600, in `~/Library/Application Support/TabCrew/` or `$XDG_STATE_HOME/tabcrew/`) and the extension in `chrome.storage.local`.
+  - *Later connections.* The extension sends a fresh nonce. The hub answers with its own nonce and `HMAC-SHA256(secret, …)`. The extension checks that proof before it sends anything, then answers with its own proof, compared in constant time.
+  - *Before verification.* No session data is exchanged, and frames received before verification are dropped.
+  - *Failures.* A missing or wrong pin closes the socket with 4403. The extension then stops retrying and shows **untrusted hub** until the user acts.
+  - *Re-trusting.* Re-trusting takes a user action: **Trust this hub** in the popup, plus `tabcrew mcp reset-pin` if the hub already holds another secret.
+  - *Storage.* The pin store fails closed if the file has loose permissions or is a symlink. The secret is never logged.
+- **Port conflicts.** If the port is taken, the hub refuses to start (exit 3, with `port N in use by pid P (cmd)` in `hub.error`). It never shares or takes over the port.
+- **Model calls (`model_call`).** The extension proxies every model call:
+  - *What the hub chooses.* Only the purpose (`chat_decision`, `text`, `text_fallback`), the chat messages (role and content only), `max_tokens` (capped at 4096) and `response_format` (`json_object` or `text`).
+  - *What the extension adds.* The model for that purpose, the `Authorization: Bearer` key and the custom headers, all from the popup.
+  - *Where it sends them.* Only a POST to `{base URL}/chat/completions`, with `credentials: "omit"`, redirects treated as errors, a timeout, a 1 MB reply cap and a local rate limit (8 concurrent calls, 120 per minute).
+  - *What it refuses.* Calls fail before any network request when no provider is saved, a model is missing, the stored settings are invalid, or Chrome has not granted the provider's host permission.
+  - *What the hub gets back.* The HTTP status, the parsed JSON and the model name. Error messages have the key and every header value redacted.
+  - The hub can't choose the URL, model or headers, and never receives the key.
+- **Provider settings.** The base URL must be `https://` (or `http://` for `localhost`/`127.0.0.1`), with no credentials, query or fragment. Header names must be tokens, header values can't contain CR, LF or NUL, and `Authorization`, `Host`, `Cookie`, `Content-Length`, `Content-Type` and `Origin` are reserved. There are at most 20 headers. The extension holds host permission only for origins the user approved on **Save** or **Test** (`optional_host_permissions`; no install-time host permissions).
+- **Key at rest.** The provider API key and headers are stored in plain text in `chrome.storage.local`. That is in the Chrome profile, readable by the user's account, not synced, and deleted with the extension or with **Remove**. The popup never shows a saved key again (only `Set …last4`), and a saved key is reused only for the same provider origin.
+- **No `~/.tabcrew`.** Hub mode never creates or reads `~/.tabcrew`: no token, env file, config or launchd job. The pairing host is not used: with **Connection: Hub** the extension never calls native messaging. With **Auto** and no daemon token, it makes at most one pairing attempt per service-worker start, to find a daemon install; when Chrome policy blocks native messaging, that attempt simply fails.
+
+What hub mode protects against:
+
+- Web pages, other extensions and DNS rebinding reaching the hub (Origin and Host checks).
+- Other local user accounts reaching MCP (socket and directory permissions).
+- After pairing, a fake hub squatting on port 8775 (it can't produce the HMAC proof, so the extension sends it nothing) and a fake extension connecting to the hub (it can't answer the challenge).
+- A hub, or anyone who can talk to it, steering the API key to another server, model or header.
+
+What it does not protect against:
+
+- **Malware running as the user.** It can use the socket, read `hub-pin` and the Chrome profile, and so drive the browser or read the key. Daemon mode has the same limit.
+- **The first-pairing race.** Before the first pairing, and after **Trust this hub** or `reset-pin`, the extension trusts whichever process answers on the port first. Only re-trust a hub you started yourself.
+- **What MCP clients do.** Prompt-injected or malicious agents connected through a shim can do everything in the [risks](#important-risks) below, including sending page content to your model provider through `browse`.
+
+Pairing host (`com.tabcrew.pair`, native messaging; daemon mode only):
 
 - Chrome starts it only for extension IDs in its manifest's `allowed_origins` (exact `chrome-extension://<id>/` origins of the published and development builds), and the host checks the caller origin again. It answers one `get_token` request, never logs the token, and exits. Any process running as the user can already read `~/.tabcrew/token`, so pairing does not widen access.
 
@@ -49,8 +85,8 @@ Extension:
 - No remote code: everything is bundled; no `eval` or `new Function` (the store build check fails if they appear). Page-inspection scripts run in agent tabs through `chrome.debugger` `Runtime.evaluate` are fixed constants shipped in the bundle, with only JSON-encoded numbers and strings interpolated.
 - Default Manifest V3 content security policy, no content scripts, no `externally_connectable`, no web-accessible resources.
 - The snapshot skips password, file and hidden inputs. `debug_logs` builds each entry field by field: no headers, cookies, bodies or query strings, and never calls `Network.getResponseBody`.
-- The extension talks only to the daemon on `127.0.0.1`.
-- The extension holds no API keys and makes no model calls. A key typed into the popup is relayed to the daemon and never written to extension storage or logged.
+- The extension talks to the daemon or hub on `127.0.0.1`. In hub mode it also talks to the one model provider the user saved in the popup (host permission granted per origin).
+- Daemon mode: the extension holds no API keys and makes no model calls. A key typed into the popup is relayed to the daemon and never written to extension storage or logged. Hub mode: see the `model_call` and key-at-rest notes above.
 
 CLI:
 
@@ -65,11 +101,11 @@ CLI:
 
 ## Important risks
 
-An agent with the token can, in your signed-in browser:
+An agent with the token (daemon mode) or with access to the hub socket (hub mode) can, in your signed-in browser:
 
 - Read page content and capture screenshots.
 - Click, type, and select on any site.
 - Read console messages and request metadata of its tabs.
 - Send page content to the configured model provider when it uses `browse`.
 
-Use caution on admin panels, payment flows, private accounts, and pages with sensitive data. Consider a dedicated browser profile for automation. Do not expose the daemon ports beyond localhost.
+Use caution on admin panels, payment flows, private accounts, and pages with sensitive data. Consider a dedicated browser profile for automation. Do not expose the daemon or hub ports beyond localhost.
