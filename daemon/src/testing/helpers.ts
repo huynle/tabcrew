@@ -10,11 +10,14 @@ import { ReadBuffer, serializeMessage } from "@modelcontextprotocol/sdk/shared/s
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { CallToolResult, JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 import {
+  V2_EXT_FEATURE_GROUPS,
   V2_EXT_FEATURE_MODEL_CALL,
   V2_PIN_NONCE_BYTES,
   V2_PROTOCOL_VERSION,
   v2ExtProofInput,
   v2HubProofInput,
+  v2IsFinishMode,
+  v2NormaliseGroupName,
   v2WelcomePin,
   type V2DaemonFrame,
   type V2Error,
@@ -22,6 +25,7 @@ import {
   type V2ExtOp,
   type V2ExtOpMap,
   type V2ExtResponse,
+  type V2FinishMode,
   type V2ModelCall,
   type V2Request,
   type V2Snapshot,
@@ -201,6 +205,13 @@ export class FakeExtension {
   readonly pageText = new Map<number, string>();
   /** debug_logs result per `${tab_id}:${source}`. */
   readonly logs = new Map<string, unknown>();
+  /** hello.features this fake announced; `groups` turns on the shared-groups simulation. */
+  features: readonly string[] = [];
+  /** Shared groups: session short_id -> name of its TabCrew group (first request decides). */
+  readonly groupOf = new Map<string, string>();
+  /** Shared groups: the popup's default group name and finish mode. */
+  defaultGroupName = "TabCrew";
+  defaultFinishMode: V2FinishMode = "keep";
   private nextTabId = 100;
   private nextExtId = 1;
   private readonly extWaiters = new Map<string, (response: V2ExtResponse) => void>();
@@ -219,6 +230,7 @@ export class FakeExtension {
     options: { origin?: string } = {},
   ): Promise<FakeExtension> {
     const ext = await FakeExtension.open(port, options.origin);
+    if (Array.isArray(hello.features)) ext.features = hello.features as string[];
     await ext.sendHello({ type: "hello", protocol: V2_PROTOCOL_VERSION, token, extension_version: "test", ...hello });
     return ext;
   }
@@ -232,6 +244,7 @@ export class FakeExtension {
   static async connectHub(port: number, options: HubConnectOptions): Promise<FakeExtension> {
     const origin = options.origin === undefined ? TEST_EXTENSION_ORIGIN : (options.origin ?? undefined);
     const ext = await FakeExtension.open(port, origin);
+    ext.features = options.features ?? [V2_EXT_FEATURE_MODEL_CALL];
     const nonce_e = randomBytes(V2_PIN_NONCE_BYTES).toString("hex");
     const pin = options.state === "new" ? { state: "new", secret: options.secret } : { state: "pinned", nonce_e };
     await ext.sendHello({
@@ -239,7 +252,7 @@ export class FakeExtension {
       protocol: V2_PROTOCOL_VERSION,
       extension_version: "test",
       mode: "hub",
-      features: options.features ?? [V2_EXT_FEATURE_MODEL_CALL],
+      features: ext.features,
       pin,
     });
     const welcomePin = v2WelcomePin(ext.welcome);
@@ -360,6 +373,10 @@ export class FakeExtension {
     const tabs = this.groups.get(req.session.short_id) ?? [];
     this.groups.set(req.session.short_id, tabs);
     const args = req.args as Record<string, unknown>;
+    const groupsFeature = this.features.includes(V2_EXT_FEATURE_GROUPS);
+    if (groupsFeature && !this.groupOf.has(req.session.short_id)) {
+      this.groupOf.set(req.session.short_id, req.session.group ?? this.defaultGroupName);
+    }
     switch (req.op) {
       case "tab_create": {
         const tab = { tab_id: this.nextTabId++, url: (args.url as string) ?? "about:blank", title: "" };
@@ -380,7 +397,25 @@ export class FakeExtension {
       }
       case "session_release": {
         this.groups.delete(req.session.short_id);
-        return { kept_tabs: tabs.length, moved: true };
+        this.groupOf.delete(req.session.short_id);
+        if (!groupsFeature) return { kept_tabs: tabs.length, moved: true };
+        const mode = v2IsFinishMode(args.tabs) ? args.tabs : this.defaultFinishMode;
+        if (mode === "close") return { kept_tabs: 0, moved: false, closed_tabs: tabs.length, mode };
+        return { kept_tabs: tabs.length, moved: mode === "collect", mode };
+      }
+      case "group_list": {
+        const mine = this.groupOf.get(req.session.short_id);
+        return { groups: [...new Set(this.groupOf.values())].map((name) => ({ name, mine: name === mine })) };
+      }
+      case "group_rename": {
+        const previous = typeof args.group === "string" ? args.group : this.groupOf.get(req.session.short_id)!;
+        if (![...this.groupOf.values()].includes(previous)) {
+          throw new WireError({ code: "invalid_args", message: `no TabCrew group named ${previous}` });
+        }
+        const name = v2NormaliseGroupName(args.name);
+        if (name === null) throw new WireError({ code: "invalid_args", message: "not a valid group name" });
+        for (const [shortId, group] of this.groupOf) if (group === previous) this.groupOf.set(shortId, name);
+        return { name, previous };
       }
       case "screenshot":
         if (!tabs.some((t) => t.tab_id === args.tab_id)) throw new WireError({ code: "tab_not_owned", message: "x" });

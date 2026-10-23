@@ -3,6 +3,7 @@ import type { IncomingMessage } from "node:http";
 import type { AddressInfo } from "node:net";
 import {
   V2_CLOSE_PIN_MISMATCH,
+  V2_EXT_FEATURE_GROUPS,
   V2_EXT_FEATURE_MODEL_CALL,
   V2_FEATURE_HUB,
   V2_MODEL_CALL_MAX_TIMEOUT_MS,
@@ -46,9 +47,23 @@ export const MUTATING_OPS: ReadonlySet<V2Op> = new Set<V2Op>([
   "tab_close",
   "session_close",
   "session_release",
+  "group_rename",
   "act",
   "navigate",
 ]);
+
+/** Ops only extensions announcing the shared-groups feature understand. */
+const GROUP_OPS: ReadonlySet<V2Op> = new Set<V2Op>(["group_rename", "group_list"]);
+
+export const GROUPS_UNSUPPORTED_MESSAGE =
+  "the connected TabCrew extension does not support named tab groups; ask the user to update the TabCrew extension and reload it";
+
+/** The session ref as an extension sees it: `group` only for extensions that understand it. */
+function refFor(session: V2SessionRef, groups: boolean): V2SessionRef {
+  return groups && session.group !== undefined
+    ? { short_id: session.short_id, label: session.label, group: session.group }
+    : { short_id: session.short_id, label: session.label };
+}
 
 export const CLOSE_BAD_HELLO = 4401;
 export const CLOSE_PIN_MISMATCH = V2_CLOSE_PIN_MISMATCH;
@@ -194,6 +209,11 @@ export class ExtensionBridge {
     return this.connected ? this.extensionFeatures : [];
   }
 
+  /** The connected extension understands shared groups (`group`, finish modes, group ops). */
+  get supportsGroups(): boolean {
+    return this.features.includes(V2_EXT_FEATURE_GROUPS);
+  }
+
   get inFlight(): number {
     return this.pending.size;
   }
@@ -232,7 +252,11 @@ export class ExtensionBridge {
     this.wss = null;
   }
 
-  /** Send an op to the extension and resolve with its typed result. */
+  /**
+   * Send an op to the extension and resolve with its typed result. The session's `group` only
+   * travels to an extension with the groups feature; group ops to other extensions are refused
+   * (`invalid_args`, GROUPS_UNSUPPORTED_MESSAGE) without being sent.
+   */
   async request<K extends V2Op>(
     session: V2SessionRef,
     op: K,
@@ -240,13 +264,15 @@ export class ExtensionBridge {
     timeoutMs = this.options.defaultRequestTimeoutMs ?? 30_000,
   ): Promise<V2OpMap[K]["result"]> {
     const socket = await this.waitForConnection();
+    const groups = this.extensionFeatures.includes(V2_EXT_FEATURE_GROUPS);
+    if (GROUP_OPS.has(op) && !groups) throw new DaemonError("invalid_args", GROUPS_UNSUPPORTED_MESSAGE);
     const id = randomUUID();
     return new Promise<V2OpMap[K]["result"]>((resolve, reject) => {
       const timer = setTimeout(() => {
         if (this.pending.delete(id)) reject(lostError(op, `extension did not answer within ${Math.round(timeoutMs / 1000)} s`));
       }, timeoutMs);
       this.pending.set(id, { op, socket, resolve: resolve as (v: unknown) => void, reject, timer, sentAt: performance.now() });
-      const frame: V2DaemonFrame = { type: "request", id, op, session, args };
+      const frame: V2DaemonFrame = { type: "request", id, op, session: refFor(session, groups), args };
       socket.send(JSON.stringify(frame), (err) => {
         if (err && this.pending.has(id)) {
           clearTimeout(timer);
@@ -424,14 +450,14 @@ export class ExtensionBridge {
     return run;
   }
 
-  private welcomeFrame(sessions: readonly V2SessionRef[], pin?: V2WelcomePin): V2Welcome {
+  private welcomeFrame(sessions: readonly V2SessionRef[], pin?: V2WelcomePin, groups = false): V2Welcome {
     const features: string[] = [];
     if (this.options.onExtRequest) features.push(V2_FEATURE_SETTINGS);
     if (this.auth.kind === "hub") features.push(V2_FEATURE_HUB);
     return {
       type: "welcome",
       protocol: V2_PROTOCOL_VERSION,
-      sessions: sessions.map((s) => ({ short_id: s.short_id, label: s.label })),
+      sessions: sessions.map((s) => refFor(s, groups)),
       ...(this.options.daemonVersion ? { daemon_version: this.options.daemonVersion } : {}),
       features,
       ...(pin ? { pin } : {}),
@@ -447,7 +473,10 @@ export class ExtensionBridge {
       this.failPending(previous, "extension connection replaced");
       previous.close(CLOSE_REPLACED, "replaced by a newer connection");
     }
-    if (welcome === "send") socket.send(JSON.stringify(this.welcomeFrame(this.options.sessions(), pin)));
+    if (welcome === "send") {
+      const groups = hello.features.includes(V2_EXT_FEATURE_GROUPS);
+      socket.send(JSON.stringify(this.welcomeFrame(this.options.sessions(), pin, groups)));
+    }
     log.info(`extension: connected (version ${this.extensionVersion})`);
     this.startPing(socket);
     this.options.onConnect?.();

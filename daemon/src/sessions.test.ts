@@ -1,8 +1,8 @@
-import { readFileSync, statSync } from "node:fs";
+import { readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { DaemonError } from "./errors.js";
-import { normaliseLabel, SessionRegistry } from "./sessions.js";
+import { normaliseLabel, SessionRegistry, sessionRef } from "./sessions.js";
 import { tempHome } from "./testing/helpers.js";
 
 let cleanup: (() => void) | null = null;
@@ -83,6 +83,60 @@ describe("SessionRegistry", () => {
     expect([...a.tabs].sort()).toEqual([2, 5]);
     expect([...b.tabs]).toEqual([]);
     expect(reg.size).toBe(2);
+  });
+
+  it("keeps an optional, normalised group name in the session ref", () => {
+    const reg = new SessionRegistry({ idleTimeoutMs: 0 });
+    const plain = reg.open("plain").session;
+    const named = reg.open("named", "  Research \n team ").session;
+    const junk = reg.open("junk", "✓ TabCrew").session;
+    expect(plain.group).toBeUndefined();
+    expect(sessionRef(plain)).toEqual({ short_id: plain.short_id, label: "plain" });
+    expect(named.group).toBe("Research team");
+    expect(sessionRef(named)).toEqual({ short_id: named.short_id, label: "named", group: "Research team" });
+    expect(junk.group).toBeUndefined();
+    expect(reg.refs().map((r) => r.group)).toEqual([undefined, "Research team", undefined]);
+  });
+
+  it("persists the group and reloads it (dropping invalid names)", () => {
+    const t = tempHome();
+    cleanup = t.cleanup;
+    const file = join(t.home, "sessions.json");
+    const reg = new SessionRegistry({ file, idleTimeoutMs: 0 });
+    const { handle: h1 } = reg.open("a", "Docs");
+    const { handle: h2 } = reg.open("b");
+    const saved = JSON.parse(readFileSync(file, "utf8"));
+    expect(saved.sessions.map((s: { group?: string }) => s.group)).toEqual(["Docs", undefined]);
+    saved.sessions[1].group = "x".repeat(41);
+    writeFileSync(file, JSON.stringify(saved));
+
+    const reg2 = new SessionRegistry({ file, idleTimeoutMs: 0 });
+    reg2.load();
+    expect(reg2.use(h1).group).toBe("Docs");
+    expect(reg2.use(h2).group).toBeUndefined();
+  });
+
+  it("renames a group for every session in it (and an extra session that used the default)", () => {
+    const t = tempHome();
+    cleanup = t.cleanup;
+    const file = join(t.home, "sessions.json");
+    const reg = new SessionRegistry({ file, idleTimeoutMs: 0 });
+    const a = reg.open("a", "Docs").session;
+    const b = reg.open("b", "Docs").session;
+    const c = reg.open("c", "Other").session;
+    const d = reg.open("d").session;
+    const e = reg.open("e").session;
+    expect(reg.renameGroup("Docs", "Manuals").sort((x, y) => x.label.localeCompare(y.label))).toEqual([a, b]);
+    expect([a.group, b.group, c.group, d.group]).toEqual(["Manuals", "Manuals", "Other", undefined]);
+    expect(reg.renameGroup("TabCrew", "Mine", d)).toEqual([d]);
+    expect([d.group, e.group]).toEqual(["Mine", undefined]);
+    expect(reg.renameGroup("Nope", "Whatever")).toEqual([]);
+    expect(reg.renameGroup("Other", "✓ bad")).toEqual([]);
+    expect(c.group).toBe("Other");
+
+    const reg2 = new SessionRegistry({ file, idleTimeoutMs: 0 });
+    reg2.load();
+    expect(reg2.list().map((s) => s.group)).toEqual(["Manuals", "Manuals", "Other", "Mine", undefined]);
   });
 
   it("reports idle sessions after the timeout", () => {

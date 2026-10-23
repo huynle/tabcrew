@@ -242,13 +242,13 @@ export async function startDaemon(
   }
 
   const closeIdle = async (session: Session): Promise<void> => {
-    // Idle sessions hand their tabs to the user; a stopped session's tabs stay exactly where they are.
-    const handOver = !session.stopped;
+    // Idle sessions finish with the user's default (from the popup); a stopped session's tabs stay exactly where they are.
+    const release = !session.stopped;
     try {
-      await closeSession(ctx, session, handOver);
-      log.info(`session ${session.short_id} ended after idle timeout${handOver ? " (tabs handed to the user)" : " (stopped; tabs left as they are)"}`);
+      await closeSession(ctx, session, release);
+      log.info(`session ${session.short_id} ended after idle timeout${release ? " (tabs finished with the user's default)" : " (stopped; tabs left as they are)"}`);
     } catch (err) {
-      log.warn(`session ${session.short_id}: handing tabs over failed (${(err as { code?: string }).code ?? "error"})`);
+      log.warn(`session ${session.short_id}: finishing its tabs failed (${(err as { code?: string }).code ?? "error"})`);
     }
   };
   const sweepIdle = async (): Promise<void> => {
