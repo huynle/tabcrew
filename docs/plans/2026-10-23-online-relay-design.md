@@ -143,6 +143,14 @@ Limits per user: number of browsers, concurrent sessions and request rate. There
   - `https://tabcrew.huynle.com/auth/github/callback`
   - `https://tabcrew.huynle.com/auth/google/callback`
 - Secrets go through the cluster's existing secret handling.
+- **OAuth apps (created 2026-10-23).** Both list the production callback and the local dev relay on `http://127.0.0.1:8790`. Secrets are only in the owner's macOS login keychain (account `tabcrew`), never in the repo.
+
+  | Provider | Where | Client ID | Keychain service |
+  |---|---|---|---|
+  | GitHub OAuth App "TabCrew" | org `huynle`, app 3958704 | `Ov23liX9R1TeuvVbbVca` | `tabcrew-github-client-secret` |
+  | Google web client "TabCrew" | GCP project `tabcrew-online` | `941319505392-v7dnp29e6fisgh9kg0nqtrlcfiqepvic.apps.googleusercontent.com` | `tabcrew-google-client-secret` |
+
+  The Google consent screen is External and in **Testing**: only listed test users can sign in until it is published to production (basic `openid email profile` scopes need no verification).
 
 ## Rollout
 
