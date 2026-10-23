@@ -1,6 +1,6 @@
 import { DaemonError } from "../errors.js";
 import { log } from "../log.js";
-import type { ActionSpace, ElementOperation } from "../observe.js";
+import { scrollChoices, type ActionSpace, type ElementOperation, type ScrollOperation } from "../observe.js";
 import {
   buildDecisionRequest,
   chooseJev,
@@ -11,6 +11,7 @@ import {
   OPENROUTER_URL,
   parseCost,
   sendModel,
+  targetQuestion,
   viaExtension,
   type Decision,
   type HistoryEntry,
@@ -34,8 +35,9 @@ Rules for choosing the target:
 ${TARGET}
 
 For TYPE_TEXT choose only the field; a separate helper types the value from the goal.
+When a dialog is open, what you need is usually inside it: scroll the dialog, not the page.
 Reply with ONLY a JSON object, no Markdown:
-{"operation": "<one offered operation id>", "target": "<offered element index for CLICK/TYPE_TEXT/SELECT, else null>",
+{"operation": "<one offered operation id>", "target": "<offered target for CLICK/TYPE_TEXT/SELECT, or for SCROLL_UP/SCROLL_DOWN when targets are offered for it (null: the first one), else null>",
  "confidence": <0..1>, "reason": "<one short sentence>"}`;
 
 export interface ChatReply {
@@ -49,11 +51,15 @@ function isUnitNumber(n: unknown): n is number {
   return typeof n === "number" && Number.isFinite(n) && n >= 0 && n <= 1;
 }
 
-/** Parse and validate a chat reply against what was offered. Tolerates a Markdown fence or text around the object. */
+/**
+ * Parse and validate a chat reply against what was offered. Tolerates a Markdown fence or text
+ * around the object. Operations in `optional` (scroll) may omit the target: null means the first listed.
+ */
 export function parseChatDecision(
   content: unknown,
   operations: readonly string[],
   targets: ReadonlyMap<string, readonly string[]>,
+  optional: ReadonlySet<string> = new Set(),
 ): ChatReply {
   if (typeof content !== "string") throw new DaemonError("model_error", INVALID_CHAT);
   const start = content.indexOf("{");
@@ -73,8 +79,9 @@ export function parseChatDecision(
   const candidates = targets.get(operation);
   if (candidates) {
     const t = typeof r.target === "number" ? String(r.target) : typeof r.target === "string" ? r.target.trim().replace(/^\[|\]$/g, "") : "";
-    if (!candidates.includes(t)) throw new DaemonError("model_error", `${INVALID_CHAT} (target not offered for ${operation})`);
-    target = t;
+    const omitted = optional.has(operation) && (r.target === null || r.target === undefined || t === "" || t === "null");
+    if (!omitted && !candidates.includes(t)) throw new DaemonError("model_error", `${INVALID_CHAT} (target not offered for ${operation})`);
+    target = omitted ? null : t;
   }
   const reason = typeof r.reason === "string" ? r.reason.replace(/\s+/g, " ").trim().slice(0, MAX_REASON) : "";
   return { operation, target, confidence: isUnitNumber(r.confidence) ? r.confidence : 0, reason };
@@ -109,8 +116,9 @@ export async function chooseChat(
   const questions = request.body.questions as Record<string, { criteria: Record<string, unknown> }>;
   const targets = new Map<string, string[]>();
   const offered: Record<string, unknown> = {};
-  for (const operation of space.targets.keys()) {
-    const criteria = questions[`${operation.toLowerCase()}_target`].criteria;
+  const scrolls = scrollChoices(space);
+  for (const operation of [...space.targets.keys(), ...scrolls.keys()]) {
+    const criteria = questions[targetQuestion(operation)].criteria;
     targets.set(operation, Object.keys(criteria));
     offered[operation] = criteria;
   }
@@ -150,16 +158,17 @@ export async function chooseChat(
   }
   const result = sent.json as { choices?: { message?: { content?: unknown } }[]; usage?: Record<string, unknown> } | null;
   const decision_ms = Math.round(performance.now() - started);
-  const reply = parseChatDecision(result?.choices?.[0]?.message?.content, request.operations, targets);
+  const reply = parseChatDecision(result?.choices?.[0]?.message?.content, request.operations, targets, new Set(scrolls.keys()));
   const usage = {
     input_tokens: num(result?.usage?.prompt_tokens),
     output_tokens: num(result?.usage?.completion_tokens),
     cost: parseCost(result?.usage),
   };
-  const candidates = space.targets.get(reply.operation as ElementOperation);
-  const action = candidates
-    ? candidates.get(reply.target!)!
-    : (space.controlActions.get(reply.operation as "SCROLL_UP" | "SCROLL_DOWN" | "WAIT") ?? null);
+  const candidates = space.targets.get(reply.operation as ElementOperation) ?? scrolls.get(reply.operation as ScrollOperation);
+  const action =
+    candidates && reply.target !== null
+      ? candidates.get(reply.target)!
+      : (space.controlActions.get(reply.operation as "SCROLL_UP" | "SCROLL_DOWN" | "WAIT") ?? null);
   return {
     provider: "chat",
     model: sent.model ?? model ?? "chat",

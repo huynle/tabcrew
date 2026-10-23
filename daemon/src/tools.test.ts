@@ -7,7 +7,7 @@ import type { RunningDaemon } from "./daemon.js";
 import { CLOSE_REMINDER } from "./jev/browse.js";
 import { HANDED_OVER_NOTE } from "./mcp/tools.js";
 import { SessionRegistry } from "./sessions.js";
-import { flightsSnapshot } from "./testing/fixtures.js";
+import { flightsSnapshot, panelsSnapshot } from "./testing/fixtures.js";
 import { call, FakeExtension, mcpClient, startTestDaemon, tempHome, until, WireError } from "./testing/helpers.js";
 
 let home: string;
@@ -181,6 +181,34 @@ describe("observe and act", () => {
       if (text) expectedArgs.text = text;
       expect(sent.args).toEqual(expectedArgs);
     }
+  });
+
+  it("observe lists scroll areas as controls with s<n> targets; act scrolls the chosen one", async () => {
+    const { client, ext } = await setup();
+    const a = await openWithTab(client);
+    ext.snapshots.set(a.tab, panelsSnapshot());
+    const obs = await call(client, "observe", { session: a.S, tab_id: a.tab });
+    expect(obs.ok && obs.value.controls).toEqual([
+      { operation: "SCROLL_DOWN", label: "Scroll down" },
+      { operation: "SCROLL_DOWN", label: 'Scroll down in "Messages" panel', target: "s1" },
+      { operation: "SCROLL_DOWN", label: 'Scroll down in "Activity" panel', target: "s2" },
+      { operation: "SCROLL_UP", label: 'Scroll up in "Activity" panel', target: "s2" },
+      { operation: "WAIT", label: "Wait for the page to update" },
+    ]);
+    const act = async (extra: Record<string, unknown>) => {
+      const o = await call(client, "observe", { session: a.S, tab_id: a.tab });
+      return call(client, "act", { session: a.S, tab_id: a.tab, fingerprint: o.ok && o.value.fingerprint, ...extra });
+    };
+    expect(await act({ operation: "SCROLL_DOWN", target: "s2" })).toEqual({
+      ok: true,
+      value: { executed: { operation: "SCROLL_DOWN", target: "s2", label: 'Scroll down in "Activity" panel' }, page_changed: true },
+    });
+    expect((await act({ operation: "SCROLL_DOWN" })).ok).toBe(true);
+    expect((await act({ operation: "SCROLL_DOWN", target: "page" })).ok).toBe(true);
+    const bad = await act({ operation: "SCROLL_DOWN", target: 3 });
+    expect(errCode(bad)).toBe("target_invalid");
+    expect(!bad.ok && bad.error.message).toContain("valid SCROLL_DOWN targets: page, s1, s2");
+    expect(opsOf(ext, "act").map((r) => (r.args as { action_id: string }).action_id)).toEqual(["scroll_down_2", "scroll_down", "scroll_down"]);
   });
 
   it("returns stale_page without calling the extension for an unknown or old fingerprint", async () => {

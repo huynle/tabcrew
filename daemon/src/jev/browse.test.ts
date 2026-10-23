@@ -3,7 +3,7 @@ import type { V2Request, V2Snapshot } from "@tabcrew/shared/v2";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RunningDaemon } from "../daemon.js";
 import { setLogSink } from "../log.js";
-import { flightsSnapshot } from "../testing/fixtures.js";
+import { flightsSnapshot, modalSnapshot, panelsSnapshot } from "../testing/fixtures.js";
 import { call, FakeExtension, mcpClient, simpleSnapshot, startTestDaemon, tempHome, until, WireError } from "../testing/helpers.js";
 import { CHAT_DECISION } from "./chat.js";
 import { NEXT_ACTION, TEXT_VALUE } from "./questions.js";
@@ -569,6 +569,116 @@ describe("loop control", () => {
     expect(browseLines[1]).toMatch(new RegExp(`^browse ${a.short_id} tab ${a.tab}: done after 2 step\\(s\\) in \\d+ ms$`));
     const all = lines.join("\n");
     for (const secret of ["GoalWords", "SecretCity", "Search flights", "Zürich"]) expect(all).not.toContain(secret);
+  });
+});
+
+describe("scroll areas", () => {
+  const CHAT_ENV = { OPENROUTER_API_KEY: "test-key", DECISION_MODEL: "anthropic/claude-haiku" };
+
+  /** The modal page: scrolling its area (scroll_down_1) reveals "Preview sync"; clicking it changes the page. */
+  function modalPage(ext: FakeExtension, tab: number) {
+    ext.snapshots.set(tab, modalSnapshot());
+    ext.handler = (req) => {
+      if (req.op === "act") {
+        const id = (req.args as { action_id: string }).action_id;
+        if (id === "scroll_down_1") ext.snapshots.set(tab, modalSnapshot(true));
+        else ext.snapshots.set(tab, { ...modalSnapshot(true), text: "Preview ready", fingerprint: "fp-modal-3" });
+      }
+      return ext.simulate(req);
+    };
+  }
+
+  it("Jev scrolls the dialog's own area (no extra head for a single target), then clicks what it revealed", async () => {
+    const { client, ext } = await setup();
+    const a = await openWithTab(client, ext);
+    modalPage(ext, a.tab);
+    script(["SCROLL_DOWN"], ["CLICK", "2"], ["DONE"]);
+    const r = await browse(client, { session: a.S, tab_id: a.tab, goal: "Press Preview sync" });
+    const first = decisionCalls()[0].body;
+    expect(Object.keys(first.questions)).toEqual(["operation", "type_text_target", "click_target"]);
+    expect(first.questions.operation.criteria.SCROLL_DOWN).toBe('Scroll down in "Provider settings" dialog');
+    expect(acts(ext).map((q) => (q.args as { action_id: string }).action_id)).toEqual(["scroll_down_1", "e3"]);
+    expect(r.status).toBe("done");
+    expect(r.steps.map((s: { operation: string; target: string | null; label: string }) => [s.operation, s.target, s.label])).toEqual([
+      ["SCROLL_DOWN", null, 'Scroll down in "Provider settings" dialog'],
+      ["CLICK", "2", "Preview sync"],
+      ["DONE", null, "DONE"],
+    ]);
+  });
+
+  it("Jev chooses among several scroll targets with a scroll_down_target head", async () => {
+    const { client, ext } = await setup();
+    const a = await openWithTab(client, ext, () => panelsSnapshot());
+    progressing(ext, a.tab);
+    script(["SCROLL_DOWN", "s2"], ["DONE"]);
+    const r = await browse(client, { session: a.S, tab_id: a.tab, goal: "Read the latest activity" });
+    const body = decisionCalls()[0].body;
+    expect(Object.keys(body.questions)).toEqual(["operation", "click_target", "scroll_down_target"]);
+    expect(body.questions.operation.criteria.SCROLL_DOWN).toMatch(/^Scroll down in one of the scroll areas/);
+    expect(body.questions.operation.criteria.SCROLL_UP).toBe('Scroll up in "Activity" panel');
+    expect(body.questions.scroll_down_target.criteria).toEqual({
+      page: { element: "[page] Scroll down" },
+      s1: { element: '[s1] Scroll down in "Messages" panel' },
+      s2: { element: '[s2] Scroll down in "Activity" panel' },
+    });
+    expect(acts(ext).map((q) => (q.args as { action_id: string }).action_id)).toEqual(["scroll_down_2"]);
+    expect(r.steps[0]).toMatchObject({ operation: "SCROLL_DOWN", target: "s2", label: 'Scroll down in "Activity" panel' });
+  });
+
+  it("an invalid scroll target answer stops with model_error and acts on nothing", async () => {
+    const { client, ext } = await setup();
+    const a = await openWithTab(client, ext, () => panelsSnapshot());
+    onDecision = (b) => jev(b, "SCROLL_DOWN", "s2", { scroll_down_target: { choice: "s9", probabilities: { s9: 1 }, confidence: 1 } });
+    const r = await browse(client, { session: a.S, tab_id: a.tab, goal: "g" });
+    expect(r.status).toBe("model_error");
+    expect(acts(ext)).toHaveLength(0);
+  });
+
+  it("chat: scroll targets are offered when there are several; a null target scrolls the first listed", async () => {
+    const { client, ext } = await setup(CHAT_ENV);
+    const a = await openWithTab(client, ext, () => panelsSnapshot());
+    progressing(ext, a.tab);
+    const moves = [
+      { operation: "SCROLL_DOWN", target: "s1", confidence: 0.7, reason: "more messages" },
+      { operation: "SCROLL_DOWN", target: null, confidence: 0.6, reason: "page" },
+      { operation: "SCROLL_UP", target: null, confidence: 0.6, reason: "back" },
+      { operation: "DONE", target: null, confidence: 0.9, reason: "done" },
+    ];
+    onChat = (_b, n) => chatReply(moves[n]);
+    const r = await browse(client, { session: a.S, tab_id: a.tab, goal: "Read the messages" });
+    const user = JSON.parse(chatCalls()[0].body.messages[1].content);
+    expect(Object.keys(user.targets)).toEqual(["CLICK", "SCROLL_DOWN"]);
+    expect(Object.keys(user.targets.SCROLL_DOWN)).toEqual(["page", "s1", "s2"]);
+    expect(acts(ext).map((q) => (q.args as { action_id: string }).action_id)).toEqual(["scroll_down_1", "scroll_down", "scroll_up_2"]);
+    expect(r.steps.slice(0, 3).map((s: { target: string | null }) => s.target)).toEqual(["s1", null, null]);
+  });
+
+  it("chat: an unoffered scroll target is rejected", async () => {
+    const { client, ext } = await setup(CHAT_ENV);
+    const a = await openWithTab(client, ext, () => panelsSnapshot());
+    onChat = () => chatReply({ operation: "SCROLL_DOWN", target: "s7", confidence: 0.9 });
+    const r = await browse(client, { session: a.S, tab_id: a.tab, goal: "g" });
+    expect(r.status).toBe("model_error");
+    expect(r.message).toMatch(/target not offered for SCROLL_DOWN/);
+    expect(acts(ext)).toHaveLength(0);
+  });
+
+  it("chat on the modal page: no scroll targets to choose, SCROLL_DOWN scrolls the dialog", async () => {
+    const { client, ext } = await setup(CHAT_ENV);
+    const a = await openWithTab(client, ext);
+    modalPage(ext, a.tab);
+    const moves = [
+      { operation: "SCROLL_DOWN", target: null, confidence: 0.8, reason: "Preview sync is lower in the dialog" },
+      { operation: "CLICK", target: "2", confidence: 0.9, reason: "press it" },
+      { operation: "DONE", target: null, confidence: 0.9, reason: "done" },
+    ];
+    onChat = (_b, n) => chatReply(moves[n]);
+    const r = await browse(client, { session: a.S, tab_id: a.tab, goal: "Press Preview sync" });
+    const user = JSON.parse(chatCalls()[0].body.messages[1].content);
+    expect(Object.keys(user.targets)).toEqual(["TYPE_TEXT", "CLICK"]);
+    expect(user.operations.SCROLL_DOWN).toBe('Scroll down in "Provider settings" dialog');
+    expect(acts(ext).map((q) => (q.args as { action_id: string }).action_id)).toEqual(["scroll_down_1", "e3"]);
+    expect(r.status).toBe("done");
   });
 });
 

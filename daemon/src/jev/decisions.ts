@@ -1,7 +1,7 @@
 import type { V2Action, V2ModelCallBody, V2ModelPurpose } from "@tabcrew/shared/v2";
 import type { ExtensionBridge } from "../bridge.js";
 import { DaemonError } from "../errors.js";
-import type { ActionSpace, ElementOperation } from "../observe.js";
+import { scrollChoices, type ActionSpace, type ElementOperation, type ScrollOperation } from "../observe.js";
 import { NEXT_ACTION, TARGET } from "./questions.js";
 
 export const DECISIONS_URL = "https://openrouter.ai/api/alpha/decisions";
@@ -287,6 +287,11 @@ const OPERATION_LABELS: Readonly<Record<ElementOperation, string>> = {
   TYPE_TEXT: "Enter or replace text in an editable field. A small LLM will supply the value from the goal.",
   SELECT: "Select an observed dropdown value.",
 };
+/** The operation label when a scroll operation has several targets (its target head picks one). */
+const SCROLL_CHOICE_LABELS: Readonly<Record<ScrollOperation, string>> = {
+  SCROLL_DOWN: "Scroll down in one of the scroll areas (the page, an open dialog or a panel); a target question chooses which.",
+  SCROLL_UP: "Scroll up in one of the scroll areas (the page, an open dialog or a panel); a target question chooses which.",
+};
 const DONE_LABEL = "Every requirement is visibly satisfied.";
 const BLOCKED_LABEL = "No supported operation can progress.";
 
@@ -311,7 +316,16 @@ function targetCriterion(index: string, action: V2Action): Record<string, unknow
   };
 }
 
-/** Port of jev-ultrafast `choose` request building: one `operation` question plus one target head per available element operation. */
+/** The target question name for an element or scroll operation, e.g. `click_target`, `scroll_down_target`. */
+export function targetQuestion(operation: string): string {
+  return `${operation.toLowerCase()}_target`;
+}
+
+/**
+ * Port of jev-ultrafast `choose` request building: one `operation` question plus one target head
+ * per available element operation, and (TabCrew) per scroll operation with several scroll targets
+ * (page, dialog, panel). A scroll operation with one target gets no head, as before.
+ */
 export function buildDecisionRequest(
   page: PageState,
   space: ActionSpace,
@@ -320,8 +334,13 @@ export function buildDecisionRequest(
   model: string,
 ): DecisionRequest {
   const criteria: Record<string, string> = {};
+  const scrolls = scrollChoices(space);
   for (const operation of space.targets.keys()) criteria[operation] = OPERATION_LABELS[operation];
-  for (const control of space.controls) criteria[control.operation] = control.label;
+  for (const control of space.controls) {
+    if (control.operation in criteria) continue;
+    const several = control.operation !== "WAIT" && scrolls.has(control.operation);
+    criteria[control.operation] = several ? SCROLL_CHOICE_LABELS[control.operation as ScrollOperation] : control.label;
+  }
   criteria.DONE = DONE_LABEL;
   criteria.BLOCKED = BLOCKED_LABEL;
 
@@ -331,7 +350,16 @@ export function buildDecisionRequest(
   for (const [operation, candidates] of space.targets) {
     const targetCriteria: Record<string, unknown> = {};
     for (const [index, action] of candidates) targetCriteria[index] = targetCriterion(index, action);
-    questions[`${operation.toLowerCase()}_target`] = {
+    questions[targetQuestion(operation)] = {
+      type: "choice",
+      criteria: targetCriteria,
+      instructions: { goal, operation, rules: [NEXT_ACTION, TARGET] },
+    };
+  }
+  for (const [operation, candidates] of scrolls) {
+    const targetCriteria: Record<string, unknown> = {};
+    for (const [target, action] of candidates) targetCriteria[target] = { element: `[${target}] ${action.label}` };
+    questions[targetQuestion(operation)] = {
       type: "choice",
       criteria: targetCriteria,
       instructions: { goal, operation, rules: [NEXT_ACTION, TARGET] },
@@ -365,7 +393,7 @@ export interface Decision {
   readonly reason?: string;
   /** An element/control operation, or DONE / BLOCKED. */
   readonly operation: string;
-  /** Element target ("3", "3:2") for CLICK/TYPE_TEXT/SELECT, otherwise null. */
+  /** Element target ("3", "3:2") for CLICK/TYPE_TEXT/SELECT, scroll target ("page", "s1") when several were offered, otherwise null. */
   readonly target: string | null;
   /** The snapshot action to execute; null for DONE / BLOCKED. */
   readonly action: V2Action | null;
@@ -403,10 +431,10 @@ export async function chooseJev(
 
   const opAnswer = validateChoice(answerMap.operation, request.operations);
   const operation = opAnswer.choice;
-  const candidates = space.targets.get(operation as ElementOperation);
+  const candidates = space.targets.get(operation as ElementOperation) ?? scrollChoices(space).get(operation as ScrollOperation);
   if (candidates) {
     // Unused target heads cannot cause an action; validate only the chosen operation's head.
-    const targetAnswer = validateChoice(answerMap[`${operation.toLowerCase()}_target`], [...candidates.keys()]);
+    const targetAnswer = validateChoice(answerMap[targetQuestion(operation)], [...candidates.keys()]);
     const target = targetAnswer.choice;
     return {
       provider: "jev",

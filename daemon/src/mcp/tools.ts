@@ -210,7 +210,7 @@ export const TOOL_DEFINITIONS: Tool[] = [
   {
     name: "observe",
     description:
-      "For precise step-by-step control. Read one of your tabs: URL, title, visible text, a numbered element table (each element lists the operations it supports; selects list options as \"<index>:<n>\"), available controls, and a fingerprint to pass to act.",
+      "For precise step-by-step control. Read one of your tabs: URL, title, visible text, a numbered element table (each element lists the operations it supports; selects list options as \"<index>:<n>\"), available controls, and a fingerprint to pass to act. Scroll controls for an open dialog or a scrollable panel carry a target like \"s1\"; while a modal dialog is open, the table and text cover the dialog, not the page behind it.",
     inputSchema: {
       type: "object",
       properties: { session: sessionProp, tab_id: tabIdProp },
@@ -220,7 +220,7 @@ export const TOOL_DEFINITIONS: Tool[] = [
   {
     name: "act",
     description:
-      "Do one operation on a tab, using the fingerprint and element indices from your latest observe of that tab. CLICK/TYPE_TEXT take an element index, SELECT takes an option index like \"3:2\", SCROLL_UP/SCROLL_DOWN/WAIT take no target. Returns stale_page (nothing done) if the page changed. Always observe again after act.",
+      "Do one operation on a tab, using the fingerprint and element indices from your latest observe of that tab. CLICK/TYPE_TEXT take an element index, SELECT takes an option index like \"3:2\", SCROLL_UP/SCROLL_DOWN take the target of a listed scroll control (\"s1\" for a dialog or panel, \"page\") or no target for the first listed one, WAIT takes no target. Targets are scrolled into view before they are clicked or typed into. Returns stale_page (nothing done) if the page changed. Always observe again after act.",
     inputSchema: {
       type: "object",
       properties: {
@@ -230,7 +230,8 @@ export const TOOL_DEFINITIONS: Tool[] = [
         operation: { type: "string", enum: [...OPERATIONS] },
         target: {
           type: ["string", "integer"],
-          description: "Element index (CLICK, TYPE_TEXT) or option index like \"3:2\" (SELECT).",
+          description:
+            "Element index (CLICK, TYPE_TEXT), option index like \"3:2\" (SELECT), or scroll target like \"s1\" / \"page\" (SCROLL_UP, SCROLL_DOWN; omit for the first listed).",
         },
         text: { type: "string", maxLength: MAX_TYPE_TEXT, description: "Text to enter; required for TYPE_TEXT." },
       },
