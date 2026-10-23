@@ -1,5 +1,6 @@
 /**
- * TabCrew service worker: wires the daemon bridge relay, session tab groups, and CDP.
+ * TabCrew service worker: wires the daemon bridge relay, session tabs (shared TabCrew window and
+ * groups, per-tab ownership; see tabs.ts), and CDP.
  * The daemon WebSocket itself lives in the offscreen document (see offscreen/), so a blocked
  * socket cannot stall request handling here.
  * Hub mode (auto without a daemon token, or the "hub" override): the pin lives in chrome.storage
@@ -7,7 +8,7 @@
  * All Chrome listeners are registered synchronously at top level (MV3 requirement).
  */
 
-import type { V2SettingsView } from "@tabcrew/shared/v2";
+import { v2IsFinishMode, type V2SettingsView } from "@tabcrew/shared/v2";
 import { CdpManager } from "./cdp.js";
 import {
   HUB_PIN_KEY,
@@ -19,7 +20,11 @@ import {
   ensureHubPin,
   legacyPopupStatus,
   loadConfig,
+  loadFinishMode,
+  loadGroupName,
   resetHubPin,
+  saveFinishMode,
+  saveGroupName,
   type PopupActionResult,
   type PopupCloseResult,
   type PopupRequest,
@@ -62,12 +67,19 @@ const pairing = new Pairing({
 const tabs = new TabManager((event) => {
   bridge.sendEvent(event);
 });
+/** A finished session's tab goes back to the user: no debugger, no cached snapshot. */
+const releaseTab = async (tabId: number) => {
+  await cdp.detach(tabId);
+  page.forget(tabId);
+};
 const bridge: BridgeRelay = new BridgeRelay({
   loadConfig: loadBridgeConfig,
   ensureOffscreen: ensureOffscreenDocument,
   handleRequest: (req) => handleRequest(req, { tabs, cdp, page }),
-  onWelcome: async () => {
-    const groups = await tabs.reconcile();
+  onWelcome: async (welcome) => {
+    // Sessions the service no longer knows are finished with the user's default mode.
+    const sessions = Array.isArray(welcome?.sessions) ? welcome.sessions : undefined;
+    const groups = await tabs.reconcile(sessions, releaseTab);
     bridge.sendEvent({ type: "event", event: "groups", groups });
   },
   onStatus: (status) => {
@@ -136,7 +148,12 @@ chrome.storage.onChanged.addListener((changes, area) => {
 chrome.runtime.onConnect.addListener((port) => {
   if (port.name === BRIDGE_PORT_NAME) bridge.attach(port);
 });
-chrome.runtime.onStartup.addListener(() => ensureBridge());
+chrome.runtime.onStartup.addListener(() => {
+  // Tab, group and window ids did not survive the browser restart: old TabCrew tabs become the
+  // user's (fail closed). Every state load waits for this wipe.
+  void tabs.handleStartup().catch((err) => console.warn("[v2] ownership wipe failed:", err));
+  ensureBridge();
+});
 chrome.runtime.onInstalled.addListener(() => ensureBridge());
 
 chrome.alarms.onAlarm.addListener((alarm) => {
@@ -154,7 +171,10 @@ chrome.runtime.onMessage.addListener((message: PopupRequest, _sender, sendRespon
         .then((sessions) => stopped.annotate(sessions))
         .catch(() => []),
       tabs.listFinished().catch(() => []),
-    ]).then(([config, sessions, finished]) => {
+      tabs.popupGroups().catch(() => []),
+      loadGroupName(),
+      loadFinishMode(),
+    ]).then(([config, sessions, finished, groups, group_name, finish_mode]) => {
       const unpaired = config.mode === "daemon" && config.token === null && pairing.lastError !== null;
       const connection = connectionStatus(config.mode, unpaired ? "not_paired" : bridge.status);
       const state: PopupState = {
@@ -169,9 +189,34 @@ chrome.runtime.onMessage.addListener((message: PopupRequest, _sender, sendRespon
         sessions,
         finished,
         service: bridge.status === "connected" ? bridge.service : null,
+        groups,
+        group_name,
+        finish_mode,
       };
       sendResponse(state);
     });
+    return true;
+  }
+  // Shared groups settings and TabCrew groups (never the user's own groups).
+  if (message?.type === "v2:rename_group") {
+    void popupAction(() => tabs.renameGroupById(message.group_id, message.name)).then(sendResponse);
+    return true;
+  }
+  if (message?.type === "v2:create_group") {
+    void popupAction(() => tabs.createGroup(message.name)).then(sendResponse);
+    return true;
+  }
+  if (message?.type === "v2:set_group_name") {
+    void popupAction(async () => {
+      if ((await saveGroupName(message.name)) === null) throw new Error("not a valid group name");
+    }).then(sendResponse);
+    return true;
+  }
+  if (message?.type === "v2:set_finish_mode") {
+    void popupAction(async () => {
+      if (!v2IsFinishMode(message.mode)) throw new Error("finish mode must be keep, close or collect");
+      await saveFinishMode(message.mode);
+    }).then(sendResponse);
     return true;
   }
   if (message?.type === "v2:trust_hub") {

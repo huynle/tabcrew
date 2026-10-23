@@ -193,9 +193,21 @@ export function createFakeChrome() {
         if (!w) throw notFound("window", id);
         return { ...w };
       }),
-      create: vi.fn(async (data: { url?: string; focused?: boolean; type?: "normal" | "popup" }) => {
+      /** With `tabId` the existing tab moves into the new window (leaving its group), like Chrome. */
+      create: vi.fn(async (data: { url?: string; tabId?: number; focused?: boolean; type?: "normal" | "popup" }) => {
+        if (data.tabId !== undefined && !tabs.has(data.tabId)) throw notFound("tab", data.tabId);
         const win = addWindow({ type: data.type ?? "normal", focused: data.focused ?? true });
-        const tab = addTab({ windowId: win.id, url: data.url ?? "chrome://newtab/", active: true });
+        let tab: FakeTab;
+        if (data.tabId !== undefined) {
+          tab = tabs.get(data.tabId)!;
+          tab.windowId = win.id;
+          tab.groupId = -1;
+          tab.index = 0;
+          setActive(tab, true);
+          dropEmpty();
+        } else {
+          tab = addTab({ windowId: win.id, url: data.url ?? "chrome://newtab/", active: true });
+        }
         return { ...win, tabs: [tabOut(tab)] };
       }),
       update: vi.fn(async (id: number, props: { focused?: boolean } = {}) => {
@@ -273,15 +285,22 @@ export function createFakeChrome() {
         dropEmpty();
         return group.id;
       }),
-      move: vi.fn(async (id: number, props: { windowId?: number }) => {
-        const t = tabs.get(id);
-        if (!t) throw notFound("tab", id);
-        if (props.windowId !== undefined && props.windowId !== t.windowId) {
-          t.windowId = props.windowId;
-          t.active = false;
+      /** Moves one tab or several (in order); a tab leaving its window leaves its group, like Chrome. */
+      move: vi.fn(async (ids: number | number[], props: { windowId?: number; index?: number }) => {
+        const list = Array.isArray(ids) ? ids : [ids];
+        for (const id of list) if (!tabs.has(id)) throw notFound("tab", id);
+        if (props.windowId !== undefined && !windows.has(props.windowId)) throw notFound("window", props.windowId);
+        for (const id of list) {
+          const t = tabs.get(id)!;
+          if (props.windowId !== undefined && props.windowId !== t.windowId) {
+            t.windowId = props.windowId;
+            t.active = false;
+            t.groupId = -1;
+          }
         }
         dropEmpty();
-        return tabOut(t);
+        const out = list.map((id) => tabOut(tabs.get(id)!));
+        return Array.isArray(ids) ? out : out[0];
       }),
       update: vi.fn(async (id: number, props: { active?: boolean }) => {
         const t = tabs.get(id);

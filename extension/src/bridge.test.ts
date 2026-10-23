@@ -48,7 +48,7 @@ describe("Bridge", () => {
     expect(ws.url).toBe("ws://127.0.0.1:8771");
     expect(bridge.status).toBe("connecting");
     ws.serverOpen();
-    expect(ws.frames()[0]).toEqual({ type: "hello", protocol: 2, token: "secret-token", extension_version: "0.3.0" });
+    expect(ws.frames()[0]).toEqual({ type: "hello", protocol: 2, token: "secret-token", extension_version: "0.3.0", features: ["groups"] });
     ws.serverSend({ type: "welcome", protocol: 2, sessions: [] });
     expect(bridge.status).toBe("connected");
   });

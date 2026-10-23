@@ -55,7 +55,7 @@ describe("OffscreenHost", () => {
     const ws = FakeSocket.instances[0]!;
     expect(ws.url).toBe("ws://127.0.0.1:9999");
     ws.serverOpen();
-    expect(ws.frames()[0]).toEqual({ type: "hello", protocol: 2, token: "secret-token", extension_version: "0.3.0" });
+    expect(ws.frames()[0]).toEqual({ type: "hello", protocol: 2, token: "secret-token", extension_version: "0.3.0", features: ["groups"] });
   });
 
   it("posts status changes and welcome to the service worker", async () => {

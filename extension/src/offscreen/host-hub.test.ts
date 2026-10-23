@@ -63,7 +63,7 @@ describe("OffscreenHost hub mode", () => {
     const ws = FakeSocket.instances[0]!;
     expect(ws.url).toBe("ws://127.0.0.1:8775");
     ws.serverOpen();
-    expect(ws.frames()[0]).toMatchObject({ type: "hello", mode: "hub", features: ["model_call"], pin: { state: "new", secret: SECRET } });
+    expect(ws.frames()[0]).toMatchObject({ type: "hello", mode: "hub", features: ["model_call", "groups"], pin: { state: "new", secret: SECRET } });
     expect(ws.frames()[0]).not.toHaveProperty("token");
   });
 
