@@ -17,6 +17,129 @@ describe("v2 group titles", () => {
   });
 });
 
+describe("shared tab groups: contracts", () => {
+  it("lists every daemon -> extension op, including group_rename and group_list", async () => {
+    const { V2_OPS, v2IsOp } = await import("./v2.js");
+    expect([...V2_OPS].sort()).toEqual(
+      [
+        "act",
+        "debug_logs",
+        "group_list",
+        "group_rename",
+        "navigate",
+        "read_text",
+        "screenshot",
+        "session_close",
+        "session_release",
+        "snapshot",
+        "tab_close",
+        "tab_create",
+        "tab_list",
+      ].sort(),
+    );
+    expect(v2IsOp("group_rename")).toBe(true);
+    expect(v2IsOp("group_list")).toBe(true);
+    expect(v2IsOp("tab_create")).toBe(true);
+    expect(v2IsOp("settings_get")).toBe(false);
+    expect(v2IsOp("__proto__")).toBe(false);
+    expect(v2IsOp("toString")).toBe(false);
+    expect(v2IsOp(1)).toBe(false);
+  });
+
+  it("knows the finish modes keep | close | collect", async () => {
+    const { V2_FINISH_MODES, v2IsFinishMode } = await import("./v2.js");
+    expect([...V2_FINISH_MODES]).toEqual(["keep", "close", "collect"]);
+    for (const m of V2_FINISH_MODES) expect(v2IsFinishMode(m)).toBe(true);
+    expect(v2IsFinishMode("KEEP")).toBe(false);
+    expect(v2IsFinishMode("release")).toBe(false);
+    expect(v2IsFinishMode(undefined)).toBe(false);
+  });
+
+  it("exports the groups extension feature and the default group name", async () => {
+    const { V2_EXT_FEATURE_GROUPS, V2_DEFAULT_GROUP_NAME, V2_GROUP_NAME_MAX_LENGTH } = await import("./v2.js");
+    expect(V2_EXT_FEATURE_GROUPS).toBe("groups");
+    expect(V2_DEFAULT_GROUP_NAME).toBe("TabCrew");
+    expect(V2_GROUP_NAME_MAX_LENGTH).toBe(40);
+  });
+
+  it("normalises group names: trims and collapses whitespace", async () => {
+    const { v2NormaliseGroupName } = await import("./v2.js");
+    expect(v2NormaliseGroupName("TabCrew")).toBe("TabCrew");
+    expect(v2NormaliseGroupName("  research   team ")).toBe("research team");
+    expect(v2NormaliseGroupName("a\tb\nc")).toBe("a b c");
+    expect(v2NormaliseGroupName("✓")).toBe("✓");
+    expect(v2NormaliseGroupName("x".repeat(40))).toBe("x".repeat(40));
+    // Length counts characters (code points), after normalising.
+    expect(v2NormaliseGroupName(`  ${"🙂".repeat(40)}  `)).toBe("🙂".repeat(40));
+  });
+
+  it("rejects invalid group names", async () => {
+    const { v2NormaliseGroupName, v2GroupTitle, v2ReleasedGroupTitle } = await import("./v2.js");
+    expect(v2NormaliseGroupName("")).toBeNull();
+    expect(v2NormaliseGroupName("   ")).toBeNull();
+    expect(v2NormaliseGroupName("x".repeat(41))).toBeNull();
+    expect(v2NormaliseGroupName("🙂".repeat(41))).toBeNull();
+    expect(v2NormaliseGroupName("bad\u0000name")).toBeNull();
+    expect(v2NormaliseGroupName("bad\u007fname")).toBeNull();
+    expect(v2NormaliseGroupName("bad\u001bname")).toBeNull();
+    // Reserved for finished groups.
+    expect(v2NormaliseGroupName("✓ TabCrew")).toBeNull();
+    expect(v2NormaliseGroupName(v2ReleasedGroupTitle("alice"))).toBeNull();
+    expect(v2NormaliseGroupName("  ✓   done ")).toBeNull();
+    // Must not look like a legacy per-session group.
+    expect(v2NormaliseGroupName(v2GroupTitle({ label: "alice", short_id: "aaaa1111" }))).toBeNull();
+    expect(v2NormaliseGroupName("alice  ·  aaaa1111")).toBeNull();
+    expect(v2NormaliseGroupName(42)).toBeNull();
+    expect(v2NormaliseGroupName(null)).toBeNull();
+    expect(v2NormaliseGroupName(undefined)).toBeNull();
+  });
+
+  it("titles the collect group ✓ TabCrew (or ✓ <name>) and never re-accepts it as a group name", async () => {
+    const { v2CollectGroupTitle, v2NormaliseGroupName, v2ParseGroupTitle } = await import("./v2.js");
+    expect(v2CollectGroupTitle()).toBe("✓ TabCrew");
+    expect(v2CollectGroupTitle("research")).toBe("✓ research");
+    expect(v2CollectGroupTitle("  research   team ")).toBe("✓ research team");
+    // Invalid names fall back to the default.
+    expect(v2CollectGroupTitle("")).toBe("✓ TabCrew");
+    expect(v2CollectGroupTitle("alice · aaaa1111")).toBe("✓ TabCrew");
+    expect(v2CollectGroupTitle("x".repeat(41))).toBe("✓ TabCrew");
+    expect(v2NormaliseGroupName(v2CollectGroupTitle("research"))).toBeNull();
+    expect(v2ParseGroupTitle(v2CollectGroupTitle("research"))).toBeNull();
+  });
+
+  it("types: session refs, groups events and session_release/group ops carry the new optional fields", async () => {
+    type V2 = typeof import("./v2.js");
+    const ref: import("./v2.js").V2SessionRef = { short_id: "aaaa1111", label: "alice", group: "research" };
+    const legacy: import("./v2.js").V2SessionRef = { short_id: "aaaa1111", label: "alice" };
+    const event: import("./v2.js").V2Event = {
+      type: "event",
+      event: "groups",
+      groups: [{ short_id: "aaaa1111", tabs: [], group: "research" }, { short_id: "bbbb2222", tabs: [] }],
+    };
+    type Release = import("./v2.js").V2OpMap["session_release"];
+    const releaseArgs: Release["args"][] = [{}, { tabs: "keep" }, { tabs: "close" }, { tabs: "collect" }];
+    const releaseResults: Release["result"][] = [
+      { kept_tabs: 1, moved: false },
+      { kept_tabs: 0, moved: false, closed_tabs: 2, mode: "close" },
+    ];
+    type Rename = import("./v2.js").V2OpMap["group_rename"];
+    const rename: [Rename["args"], Rename["result"]] = [{ name: "x", group: "TabCrew" }, { name: "x", previous: "TabCrew" }];
+    type List = import("./v2.js").V2OpMap["group_list"];
+    const list: [List["args"], List["result"]] = [{}, { groups: [{ name: "TabCrew", mine: true }] }];
+    const v2: V2 = await import("./v2.js");
+    expect([ref.group, legacy.group, event.event, releaseArgs.length, releaseResults.length, rename[1].previous, list[1].groups[0].mine]).toEqual([
+      "research",
+      undefined,
+      "groups",
+      4,
+      2,
+      "TabCrew",
+      true,
+    ]);
+    expect(typeof v2.v2IsOp).toBe("function");
+  });
+});
+
 describe("extension -> daemon requests", () => {
   it("v2IsExtOp accepts only the known ops", async () => {
     const { v2IsExtOp, V2_EXT_OPS } = await import("./v2.js");

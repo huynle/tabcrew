@@ -1,8 +1,16 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
+  FINISH_MODE_KEY,
+  GROUP_NAME_KEY,
   HUB_PIN_KEY,
+  MANAGED_GROUPS_KEY,
   MODE_KEY,
+  OWNERSHIP_KEYS,
+  PLACEMENT_KEY,
   PORT_KEY,
+  SESSION_GROUPS_KEY,
+  TABCREW_WINDOW_KEY,
+  TAB_OWNERS_KEY,
   TOKEN_KEY,
   confirmHubPin,
   connectionStatus,
@@ -11,12 +19,28 @@ import {
   ensureHubPin,
   legacyPopupStatus,
   loadConfig,
+  loadFinishMode,
+  loadGroupName,
+  loadPlacement,
+  parseFinishMode,
+  parseGroupName,
   parseHubPin,
+  parseManagedGroups,
   parseModeSetting,
+  parseOwnership,
+  parsePlacement,
   parsePort,
+  parseSessionGroups,
+  parseTabOwners,
+  parseTabcrewWindow,
   randomHex,
   resetHubPin,
+  saveFinishMode,
+  saveGroupName,
   saveModeSetting,
+  savePlacement,
+  type PopupRequest,
+  type PopupState,
 } from "./config.js";
 import { createFakeChrome, type FakeChrome } from "./test/fakes.js";
 
@@ -132,6 +156,145 @@ describe("hub pin", () => {
     expect(fresh.secret).not.toBe(SECRET);
     expect(fresh.confirmed).toBe(false);
     expect(fake.chrome.storage.local._data()[HUB_PIN_KEY]).toEqual(fresh);
+  });
+});
+
+describe("shared tab groups settings", () => {
+  it("placement: shared_window is the default; own_window and user_window still parse", async () => {
+    expect(parsePlacement("shared_window")).toBe("shared_window");
+    expect(parsePlacement("own_window")).toBe("own_window");
+    expect(parsePlacement("user_window")).toBe("user_window");
+    expect(parsePlacement(undefined)).toBe("shared_window");
+    expect(parsePlacement("bogus")).toBe("shared_window");
+    expect(await loadPlacement()).toBe("shared_window");
+    await savePlacement("own_window");
+    expect(fake.chrome.storage.local._data()[PLACEMENT_KEY]).toBe("own_window");
+    expect(await loadPlacement()).toBe("own_window");
+    await savePlacement("shared_window");
+    expect(await loadPlacement()).toBe("shared_window");
+  });
+
+  it("group name: defaults to TabCrew, normalised on load and save; invalid names are not stored", async () => {
+    expect(GROUP_NAME_KEY).toBe("v2:group_name");
+    expect(parseGroupName(undefined)).toBe("TabCrew");
+    expect(parseGroupName("  research   team ")).toBe("research team");
+    expect(parseGroupName("✓ done")).toBe("TabCrew");
+    expect(parseGroupName("alice · aaaa1111")).toBe("TabCrew");
+    expect(parseGroupName("x".repeat(41))).toBe("TabCrew");
+    expect(parseGroupName(7)).toBe("TabCrew");
+    expect(await loadGroupName()).toBe("TabCrew");
+
+    expect(await saveGroupName("  Research ")).toBe("Research");
+    expect(fake.chrome.storage.local._data()[GROUP_NAME_KEY]).toBe("Research");
+    expect(await loadGroupName()).toBe("Research");
+
+    expect(await saveGroupName("✓ nope")).toBeNull();
+    expect(fake.chrome.storage.local._data()[GROUP_NAME_KEY]).toBe("Research");
+
+    await fake.chrome.storage.local.set({ [GROUP_NAME_KEY]: "bad\u0000" });
+    expect(await loadGroupName()).toBe("TabCrew");
+  });
+
+  it("finish mode: defaults to keep; only valid modes are stored", async () => {
+    expect(FINISH_MODE_KEY).toBe("v2:finish_mode");
+    expect(parseFinishMode(undefined)).toBe("keep");
+    expect(parseFinishMode("close")).toBe("close");
+    expect(parseFinishMode("collect")).toBe("collect");
+    expect(parseFinishMode("CLOSE")).toBe("keep");
+    expect(await loadFinishMode()).toBe("keep");
+    await saveFinishMode("collect");
+    expect(fake.chrome.storage.local._data()[FINISH_MODE_KEY]).toBe("collect");
+    expect(await loadFinishMode()).toBe("collect");
+    await saveFinishMode("bogus" as never);
+    expect(fake.chrome.storage.local._data()[FINISH_MODE_KEY]).toBe("keep");
+  });
+
+  it("names the ownership keys in chrome.storage.local", () => {
+    expect(TAB_OWNERS_KEY).toBe("v2:tabOwners");
+    expect(SESSION_GROUPS_KEY).toBe("v2:sessionGroups");
+    expect(MANAGED_GROUPS_KEY).toBe("v2:managedGroups");
+    expect(TABCREW_WINDOW_KEY).toBe("v2:tabcrewWindow");
+    expect([...OWNERSHIP_KEYS].sort()).toEqual(["v2:managedGroups", "v2:sessionGroups", "v2:tabOwners", "v2:tabcrewWindow"]);
+  });
+
+  it("parses tab owners (tab id → short_id), dropping malformed entries", () => {
+    expect(parseTabOwners({ "12": "aaaa1111", "13": "bbbb2222" })).toEqual({ "12": "aaaa1111", "13": "bbbb2222" });
+    expect(parseTabOwners({ "12": "aaaa1111", x: "bbbb2222", "-1": "c", "1.5": "d", "14": "", "15": 3, "16": "y".repeat(65) })).toEqual({
+      "12": "aaaa1111",
+    });
+    expect(parseTabOwners(undefined)).toEqual({});
+    expect(parseTabOwners(["aaaa1111"])).toEqual({});
+    expect(parseTabOwners("x")).toEqual({});
+  });
+
+  it("parses session groups (short_id → group id), dropping malformed entries", () => {
+    expect(parseSessionGroups({ aaaa1111: 5, bbbb2222: 6 })).toEqual({ aaaa1111: 5, bbbb2222: 6 });
+    expect(parseSessionGroups({ aaaa1111: 5, bbbb2222: -1, cccc3333: "6", dddd4444: 1.5, "": 7 })).toEqual({ aaaa1111: 5 });
+    expect(parseSessionGroups(null)).toEqual({});
+    expect(parseSessionGroups([5])).toEqual({});
+  });
+
+  it("parses managed groups (group id → name, window, kind), dropping malformed entries", () => {
+    const good = { name: "TabCrew", windowId: 3, kind: "shared" };
+    expect(
+      parseManagedGroups({
+        "5": good,
+        "6": { name: "✓ TabCrew", windowId: 3, kind: "collect" },
+        "7": { name: "alice · aaaa1111", windowId: 4, kind: "session" },
+        "8": { name: "x", windowId: 3, kind: "other" },
+        "9": { name: "", windowId: 3, kind: "shared" },
+        "10": { name: "x", windowId: "3", kind: "shared" },
+        "11": "TabCrew",
+        nope: good,
+      }),
+    ).toEqual({
+      "5": good,
+      "6": { name: "✓ TabCrew", windowId: 3, kind: "collect" },
+      "7": { name: "alice · aaaa1111", windowId: 4, kind: "session" },
+    });
+    expect(parseManagedGroups({ "5": { ...good, extra: true } })).toEqual({ "5": good });
+    expect(parseManagedGroups(undefined)).toEqual({});
+  });
+
+  it("parses the TabCrew window id", () => {
+    expect(parseTabcrewWindow(42)).toBe(42);
+    expect(parseTabcrewWindow(-1)).toBeNull();
+    expect(parseTabcrewWindow(1.5)).toBeNull();
+    expect(parseTabcrewWindow("42")).toBeNull();
+    expect(parseTabcrewWindow(undefined)).toBeNull();
+  });
+
+  it("parses all ownership keys from one storage read", () => {
+    expect(parseOwnership({})).toEqual({ tabOwners: {}, sessionGroups: {}, managedGroups: {}, tabcrewWindow: null });
+    expect(
+      parseOwnership({
+        [TAB_OWNERS_KEY]: { "12": "aaaa1111" },
+        [SESSION_GROUPS_KEY]: { aaaa1111: 5 },
+        [MANAGED_GROUPS_KEY]: { "5": { name: "TabCrew", windowId: 3, kind: "shared" } },
+        [TABCREW_WINDOW_KEY]: 3,
+      }),
+    ).toEqual({
+      tabOwners: { "12": "aaaa1111" },
+      sessionGroups: { aaaa1111: 5 },
+      managedGroups: { "5": { name: "TabCrew", windowId: 3, kind: "shared" } },
+      tabcrewWindow: 3,
+    });
+  });
+
+  it("types: popup requests and state carry the group settings", () => {
+    const requests: PopupRequest[] = [
+      { type: "v2:rename_group", group_id: 5, name: "Research" },
+      { type: "v2:create_group", name: "Research" },
+      { type: "v2:set_group_name", name: "Research" },
+      { type: "v2:set_finish_mode", mode: "collect" },
+    ];
+    const state: Pick<PopupState, "groups" | "group_name" | "finish_mode"> = {
+      groups: [{ group_id: 5, name: "TabCrew", active_sessions: 2, finished_tabs: 1, is_default: true }],
+      group_name: "TabCrew",
+      finish_mode: "keep",
+    };
+    expect(requests.map((r) => r.type)).toEqual(["v2:rename_group", "v2:create_group", "v2:set_group_name", "v2:set_finish_mode"]);
+    expect(state.groups?.[0].is_default).toBe(true);
   });
 });
 

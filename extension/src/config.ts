@@ -1,9 +1,13 @@
 import {
+  V2_DEFAULT_GROUP_NAME,
   V2_EXTENSION_PORT,
   V2_HUB_EXTENSION_PORT,
   V2_PIN_SECRET_BYTES,
+  v2IsFinishMode,
   v2IsPinSecret,
+  v2NormaliseGroupName,
   type V2ConnectionMode,
+  type V2FinishMode,
   type V2SettingsPatch,
   type V2SettingsView,
 } from "@tabcrew/shared/v2";
@@ -15,8 +19,26 @@ export const PORT_KEY = "v2:port";
 export const MODE_KEY = "v2:mode";
 /** Hub mode TOFU pin (`HubPin`); secret, never leaves the extension except to the hub on first pairing. */
 export const HUB_PIN_KEY = "v2:hub_pin";
-/** Where new sessions open their tabs (see `Placement`); absent means "own_window". */
+/** Where new sessions open their tabs (see `Placement`); absent means "shared_window". */
 export const PLACEMENT_KEY = "v2:placement";
+/** Name of the default shared TabCrew group (`parseGroupName`); absent means "TabCrew". */
+export const GROUP_NAME_KEY = "v2:group_name";
+/** What happens to a finished session's tabs by default (`V2FinishMode`); absent means "keep". */
+export const FINISH_MODE_KEY = "v2:finish_mode";
+
+/*
+ * chrome.storage.local keys (shared groups ownership; wiped on browser startup because tab,
+ * group and window ids do not survive a Chrome restart). Parse with `parseOwnership`.
+ */
+/** tab id → short_id of the session that owns the tab (`TabOwners`). */
+export const TAB_OWNERS_KEY = "v2:tabOwners";
+/** short_id → id of the TabCrew group the session's tabs live in (`SessionGroups`). */
+export const SESSION_GROUPS_KEY = "v2:sessionGroups";
+/** group id → TabCrew-managed group (`ManagedGroups`); any group not listed belongs to the user. */
+export const MANAGED_GROUPS_KEY = "v2:managedGroups";
+/** Id of the one TabCrew window (`parseTabcrewWindow`), or absent. */
+export const TABCREW_WINDOW_KEY = "v2:tabcrewWindow";
+export const OWNERSHIP_KEYS = [TAB_OWNERS_KEY, SESSION_GROUPS_KEY, MANAGED_GROUPS_KEY, TABCREW_WINDOW_KEY] as const;
 
 /** chrome.storage.session keys (rebuildable runtime state). */
 export const SESSION_WINDOWS_KEY = "v2:sessionWindows";
@@ -32,13 +54,15 @@ export const FOCUS_ORDER_KEY = "v2:windowFocusOrder";
 export const PLACEMENTS_KEY = "v2:placements";
 
 /**
+ * - `shared_window` (default): every session gets its own tab(s) inside a shared TabCrew group
+ *   in the one TabCrew window (see `GROUP_NAME_KEY`).
  * - `own_window`: one unfocused window per session; the target tab is activated within it.
  * - `user_window`: a collapsed group in the user's window; tabs are never activated.
  */
-export type Placement = "own_window" | "user_window";
+export type Placement = "shared_window" | "own_window" | "user_window";
 
 export function parsePlacement(value: unknown): Placement {
-  return value === "user_window" ? "user_window" : "own_window";
+  return value === "own_window" || value === "user_window" ? value : "shared_window";
 }
 
 export async function loadPlacement(): Promise<Placement> {
@@ -48,6 +72,126 @@ export async function loadPlacement(): Promise<Placement> {
 
 export async function savePlacement(placement: Placement): Promise<void> {
   await chrome.storage.local.set({ [PLACEMENT_KEY]: parsePlacement(placement) });
+}
+
+/** The stored default group name, normalised (`v2NormaliseGroupName`); "TabCrew" when unset or invalid. */
+export function parseGroupName(value: unknown): string {
+  return v2NormaliseGroupName(value) ?? V2_DEFAULT_GROUP_NAME;
+}
+
+export async function loadGroupName(): Promise<string> {
+  const stored = await chrome.storage.local.get(GROUP_NAME_KEY);
+  return parseGroupName(stored[GROUP_NAME_KEY]);
+}
+
+/** Store the normalised name and return it; an invalid name is not stored (null). */
+export async function saveGroupName(name: string): Promise<string | null> {
+  const normalised = v2NormaliseGroupName(name);
+  if (normalised === null) return null;
+  await chrome.storage.local.set({ [GROUP_NAME_KEY]: normalised });
+  return normalised;
+}
+
+/** The stored default finish mode; "keep" when unset or invalid. */
+export function parseFinishMode(value: unknown): V2FinishMode {
+  return v2IsFinishMode(value) ? value : "keep";
+}
+
+export async function loadFinishMode(): Promise<V2FinishMode> {
+  const stored = await chrome.storage.local.get(FINISH_MODE_KEY);
+  return parseFinishMode(stored[FINISH_MODE_KEY]);
+}
+
+export async function saveFinishMode(mode: V2FinishMode): Promise<void> {
+  await chrome.storage.local.set({ [FINISH_MODE_KEY]: parseFinishMode(mode) });
+}
+
+// ---------------------------------------------------------------------------
+// Shared groups ownership shapes (chrome.storage.local). Keys of id maps are the decimal ids as
+// strings (JSON object keys). Parsers drop malformed entries rather than failing.
+// ---------------------------------------------------------------------------
+
+/** tab id → short_id. */
+export type TabOwners = Record<string, string>;
+/** short_id → group id. */
+export type SessionGroups = Record<string, number>;
+/** `shared`: a named TabCrew group; `collect`: the "✓ <name>" group; `session`: a per-session group (own_window / user_window). */
+export type ManagedGroupKind = "shared" | "collect" | "session";
+export interface ManagedGroup {
+  /** Last known title (the group is tracked by id, so a rename in Chrome is safe). */
+  readonly name: string;
+  readonly windowId: number;
+  readonly kind: ManagedGroupKind;
+}
+/** group id → managed group. */
+export type ManagedGroups = Record<string, ManagedGroup>;
+
+export interface OwnershipState {
+  readonly tabOwners: TabOwners;
+  readonly sessionGroups: SessionGroups;
+  readonly managedGroups: ManagedGroups;
+  readonly tabcrewWindow: number | null;
+}
+
+const MAX_SHORT_ID_LENGTH = 64;
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function isId(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0;
+}
+
+function isIdKey(key: string): boolean {
+  return /^(0|[1-9][0-9]*)$/.test(key);
+}
+
+function isShortId(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= MAX_SHORT_ID_LENGTH;
+}
+
+const MANAGED_GROUP_KINDS: readonly string[] = ["shared", "collect", "session"] satisfies ManagedGroupKind[];
+
+export function parseTabOwners(value: unknown): TabOwners {
+  const out: TabOwners = {};
+  if (!isPlainRecord(value)) return out;
+  for (const [key, owner] of Object.entries(value)) if (isIdKey(key) && isShortId(owner)) out[key] = owner;
+  return out;
+}
+
+export function parseSessionGroups(value: unknown): SessionGroups {
+  const out: SessionGroups = {};
+  if (!isPlainRecord(value)) return out;
+  for (const [key, groupId] of Object.entries(value)) if (isShortId(key) && isId(groupId)) out[key] = groupId;
+  return out;
+}
+
+export function parseManagedGroups(value: unknown): ManagedGroups {
+  const out: ManagedGroups = {};
+  if (!isPlainRecord(value)) return out;
+  for (const [key, entry] of Object.entries(value)) {
+    if (!isIdKey(key) || !isPlainRecord(entry)) continue;
+    const { name, windowId, kind } = entry;
+    if (typeof name !== "string" || !name || !isId(windowId)) continue;
+    if (typeof kind !== "string" || !MANAGED_GROUP_KINDS.includes(kind)) continue;
+    out[key] = { name, windowId, kind: kind as ManagedGroupKind };
+  }
+  return out;
+}
+
+export function parseTabcrewWindow(value: unknown): number | null {
+  return isId(value) ? value : null;
+}
+
+/** All ownership state from one `chrome.storage.local.get(OWNERSHIP_KEYS)` result. */
+export function parseOwnership(stored: Record<string, unknown>): OwnershipState {
+  return {
+    tabOwners: parseTabOwners(stored[TAB_OWNERS_KEY]),
+    sessionGroups: parseSessionGroups(stored[SESSION_GROUPS_KEY]),
+    managedGroups: parseManagedGroups(stored[MANAGED_GROUPS_KEY]),
+    tabcrewWindow: parseTabcrewWindow(stored[TABCREW_WINDOW_KEY]),
+  };
 }
 
 /**
@@ -199,7 +343,28 @@ export type PopupRequest =
    * Hub mode "Trust this hub": replace the TOFU pin with a fresh secret and reconnect handing it to
    * the hub (`state:"new"`). Answered with `PopupActionResult`.
    */
-  | { type: "v2:trust_hub" };
+  | { type: "v2:trust_hub" }
+  /**
+   * Shared groups (answered with `PopupActionResult`): rename a TabCrew-managed group by id,
+   * create a named TabCrew group, set the default group name, set the default finish mode.
+   * Names go through `v2NormaliseGroupName`; user groups are never renamed.
+   */
+  | { type: "v2:rename_group"; group_id: number; name: string }
+  | { type: "v2:create_group"; name: string }
+  | { type: "v2:set_group_name"; name: string }
+  | { type: "v2:set_finish_mode"; mode: V2FinishMode };
+
+/** A TabCrew-managed group, as the popup lists it. */
+export interface PopupGroupInfo {
+  readonly group_id: number;
+  readonly name: string;
+  /** Sessions with tabs in this group. */
+  readonly active_sessions: number;
+  /** Tabs of finished sessions kept in this group (finish mode `keep`). */
+  readonly finished_tabs: number;
+  /** This is the default group (named after `GROUP_NAME_KEY`). */
+  readonly is_default: boolean;
+}
 
 export interface PopupSessionInfo {
   readonly short_id: string;
@@ -243,6 +408,12 @@ export interface PopupState {
   readonly finished: readonly PopupFinishedInfo[];
   /** Null while not connected (or before the service's welcome arrived). */
   readonly service?: ServiceInfo | null;
+  /** Shared groups: the TabCrew-managed groups (missing: an extension without shared groups). */
+  readonly groups?: readonly PopupGroupInfo[];
+  /** Shared groups: the default group name setting. */
+  readonly group_name?: string;
+  /** Shared groups: the default finish mode setting. */
+  readonly finish_mode?: V2FinishMode;
 }
 
 export type PopupStopResult = { ok: true } | { ok: false; error: string };

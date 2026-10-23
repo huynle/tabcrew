@@ -58,6 +58,59 @@ export interface V2SessionRef {
   readonly short_id: string;
   /** Human label shown in the tab group title as `<label> · <short_id>`. */
   readonly label: string;
+  /**
+   * Shared tab groups: the TabCrew group the session asked to join (`session_open({group})`),
+   * already normalised by `v2NormaliseGroupName`. Missing: the user's default group name.
+   * Older daemons never send it; older extensions ignore it.
+   */
+  readonly group?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Shared tab groups: every session's tabs live in a TabCrew-managed group (default "TabCrew") in
+// one TabCrew window. Ownership is tracked per tab by the extension, not by the group title.
+// ---------------------------------------------------------------------------
+
+/**
+ * What happens to a session's tabs when it finishes (`session_release.args.tabs`):
+ * - `keep`: the tabs stay in their TabCrew group, marked finished (no longer owned by any agent).
+ * - `close`: the tabs are closed.
+ * - `collect`: the tabs move into one collapsed `v2CollectGroupTitle()` group in the TabCrew window.
+ */
+export const V2_FINISH_MODES = ["keep", "close", "collect"] as const;
+export type V2FinishMode = (typeof V2_FINISH_MODES)[number];
+
+export function v2IsFinishMode(value: unknown): value is V2FinishMode {
+  return typeof value === "string" && (V2_FINISH_MODES as readonly string[]).includes(value);
+}
+
+/** Extension feature (in `hello.features`): it understands shared groups (`group`, finish modes, group ops). */
+export const V2_EXT_FEATURE_GROUPS = "groups";
+/** The default name of the shared TabCrew group (the user can change it in the popup). */
+export const V2_DEFAULT_GROUP_NAME = "TabCrew";
+/** Longest group name, in characters (code points), after normalising. */
+export const V2_GROUP_NAME_MAX_LENGTH = 40;
+/** Prefix of finished-session group titles (`v2ReleasedGroupTitle`, `v2CollectGroupTitle`); reserved. */
+const FINISHED_PREFIX = "✓ ";
+const CONTROL_CHARS_RE = /\p{Cc}/u;
+
+/**
+ * A valid TabCrew group name, or null. Trims and collapses whitespace runs (tabs/newlines
+ * included) to one space; then rejects empty names, names longer than V2_GROUP_NAME_MAX_LENGTH
+ * characters, names with other control characters, names starting with "✓ " (reserved for
+ * finished groups) and names that parse as a legacy per-session title (`<label> · <8 chars>`).
+ */
+export function v2NormaliseGroupName(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const name = raw.replace(/\s+/g, " ").trim();
+  if (!name || [...name].length > V2_GROUP_NAME_MAX_LENGTH) return null;
+  if (CONTROL_CHARS_RE.test(name) || name.startsWith(FINISHED_PREFIX)) return null;
+  return v2ParseGroupTitle(name) ? null : name;
+}
+
+/** Title of the `collect` group: `✓ <name>` (`✓ TabCrew` when the name is missing or invalid). */
+export function v2CollectGroupTitle(name?: string): string {
+  return `${FINISHED_PREFIX}${v2NormaliseGroupName(name) ?? V2_DEFAULT_GROUP_NAME}`;
 }
 
 export interface V2TabInfo {
@@ -138,7 +191,8 @@ export interface V2ActResult {
 // Operations (daemon -> extension). Each has typed args and result.
 // Phase 2 implements: tab_create, tab_list, tab_close, session_close, screenshot.
 // session_release (hand tabs to the user) is what the daemon uses when a session finishes.
-// Phase 4 adds snapshot/act; phase 6 adds navigate, read_text, debug_logs.
+// Phase 4 adds snapshot/act; phase 6 adds navigate, read_text, debug_logs. Shared groups add
+// group_rename / group_list (only sent to extensions announcing V2_EXT_FEATURE_GROUPS).
 // ---------------------------------------------------------------------------
 
 export interface V2OpMap {
@@ -154,8 +208,26 @@ export interface V2OpMap {
    * user's active tab), and stops treating the tabs as owned. No `tab_removed` is sent for them.
    * `moved` is false when no user window exists and the group stays where it is. Idempotent: an
    * unknown session yields `{kept_tabs: 0, moved: false}`.
+   *
+   * Shared groups (extension feature `groups`): `tabs` picks the finish mode (missing: the
+   * user's default from the popup); the result then reports the `mode` applied and, for `close`,
+   * `closed_tabs`. Older extensions ignore `tabs` and never send `mode` / `closed_tabs`.
    */
-  session_release: { args: Record<string, never>; result: { kept_tabs: number; moved: boolean } };
+  session_release: {
+    args: { tabs?: V2FinishMode };
+    result: { kept_tabs: number; moved: boolean; closed_tabs?: number; mode?: V2FinishMode };
+  };
+  /**
+   * Shared groups: rename a TabCrew-managed group (default: the caller's group; `group` names
+   * another TabCrew group). `name` must pass `v2NormaliseGroupName`. Never touches the user's
+   * own groups. Returns the applied (normalised) name and the previous one.
+   */
+  group_rename: { args: { group?: string; name: string }; result: { name: string; previous: string } };
+  /** Shared groups: the TabCrew-managed group names (never user groups, tab ids or counts). */
+  group_list: {
+    args: Record<string, never>;
+    result: { groups: { name: string; /** The caller's session is in this group. */ mine: boolean }[] };
+  };
   screenshot: {
     args: { tab_id: number; format?: "jpeg" | "png"; quality?: number };
     result: { media_type: "image/jpeg" | "image/png"; data: string; width: number; height: number };
@@ -186,6 +258,28 @@ export interface V2OpMap {
   };
 }
 export type V2Op = keyof V2OpMap;
+
+/** Compile-time complete set of ops (a missing or unknown key is a type error). */
+const V2_OP_SET: { readonly [K in V2Op]: true } = {
+  tab_create: true,
+  tab_list: true,
+  tab_close: true,
+  session_close: true,
+  session_release: true,
+  group_rename: true,
+  group_list: true,
+  screenshot: true,
+  snapshot: true,
+  act: true,
+  navigate: true,
+  read_text: true,
+  debug_logs: true,
+};
+export const V2_OPS: readonly V2Op[] = Object.keys(V2_OP_SET) as V2Op[];
+
+export function v2IsOp(value: unknown): value is V2Op {
+  return typeof value === "string" && (V2_OPS as readonly string[]).includes(value);
+}
 
 // ---------------------------------------------------------------------------
 // Extension -> daemon requests (the popup's settings). Answered with `ext_response`.
@@ -575,7 +669,16 @@ export type V2Response<K extends V2Op = V2Op> =
 /** extension -> daemon, unsolicited. */
 export type V2Event =
   /** Sent right after welcome: the session groups that exist in the browser. */
-  | { readonly type: "event"; readonly event: "groups"; readonly groups: readonly { readonly short_id: string; readonly tabs: readonly V2TabInfo[] }[] }
+  | {
+      readonly type: "event";
+      readonly event: "groups";
+      readonly groups: readonly {
+        readonly short_id: string;
+        readonly tabs: readonly V2TabInfo[];
+        /** Shared groups: the name of the TabCrew group the session's tabs are in. */
+        readonly group?: string;
+      }[];
+    }
   /** A tab opened by an owned tab joined that tab's session group. */
   | { readonly type: "event"; readonly event: "tab_adopted"; readonly short_id: string; readonly tab: V2TabInfo }
   /** A session tab was closed (by the user or the page). */

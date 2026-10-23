@@ -50,17 +50,17 @@ function expectUserViewUntouched() {
 }
 
 describe("placement setting", () => {
-  it("defaults to own_window when nothing is stored", async () => {
-    expect(await loadPlacement()).toBe("own_window");
+  it("defaults to shared_window when nothing is stored (opened like own_window until shared groups land)", async () => {
+    expect(await loadPlacement()).toBe("shared_window");
     const a = (await call(alice, "tab_create", {})) as Info;
     expect(fake.chrome.windows.create).toHaveBeenCalledTimes(1);
     expect(tabOf(a).windowId).not.toBe(user.win.id);
     expect((await fake.chrome.storage.session.get("v2:placements"))["v2:placements"]).toEqual({ [alice.short_id]: "own_window" });
   });
 
-  it("treats an unknown stored value as own_window", async () => {
+  it("treats an unknown stored value as shared_window", async () => {
     await setPlacement("somewhere");
-    expect(await loadPlacement()).toBe("own_window");
+    expect(await loadPlacement()).toBe("shared_window");
   });
 });
 
@@ -365,11 +365,11 @@ describe("popup placement radios", () => {
     };
   }
 
-  it("checks the stored choice (own_window by default) and persists a change", async () => {
+  it("checks the stored choice (shared_window by default, no radio for it yet) and persists a change", async () => {
     const own = radio("own_window");
     const mine = radio("user_window");
     await bindPlacementRadios([own, mine]);
-    expect([own.checked, mine.checked]).toEqual([true, false]);
+    expect([own.checked, mine.checked]).toEqual([false, false]);
     mine.checked = true;
     own.checked = false;
     own.fire();
