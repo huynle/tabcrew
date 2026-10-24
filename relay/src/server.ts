@@ -102,7 +102,7 @@ export async function startRelay(o: RelayOptions): Promise<RunningRelay> {
       sendJson(res, 429, { error: "too_many_requests", error_description: "too many sign-in requests; wait a minute" }, { "retry-after": "60" });
       return;
     }
-    if (url.pathname === "/health" && req.method === "GET") {
+    if ((url.pathname === "/health" || url.pathname === "/healthz") && req.method === "GET") {
       sendJson(res, 200, { ok: true, version });
       return;
     }

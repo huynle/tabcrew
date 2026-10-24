@@ -140,9 +140,11 @@ describe("/ext socket", () => {
 });
 
 describe("health", () => {
-  it("reports ok without any user data", async () => {
-    const res = await fetch(`${t.url}/health`);
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true, version: expect.any(String) });
+  it("reports ok without any user data (/health and /healthz)", async () => {
+    for (const path of ["/health", "/healthz"]) {
+      const res = await fetch(`${t.url}${path}`);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ ok: true, version: expect.any(String) });
+    }
   });
 });
