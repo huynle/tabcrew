@@ -15,7 +15,7 @@ if (!version || !/^\d+\.\d+\.\d+$/.test(version)) {
   process.exit(2);
 }
 
-const workspaces = ["cli", "daemon", "extension", "shared"];
+const workspaces = ["cli", "daemon", "extension", "relay", "shared"];
 const files = ["package.json", ...workspaces.map((w) => `${w}/package.json`), "extension/manifest.json"];
 
 function update(rel, mutate) {
