@@ -582,6 +582,24 @@ describe("shared groups", () => {
     expect(d.registry.size).toBe(2);
   });
 
+  it("session_open is background by default; foreground: true is returned and sent with every request", async () => {
+    const { d, client, ext } = await groupsExt();
+    const bg = await openIn(client, "bg");
+    expect(bg.opened.foreground).toBe(undefined);
+    expect(opsOf(ext, "tab_create").at(-1)?.session).toEqual({ short_id: bg.short_id, label: "bg" });
+
+    const s = await call(client, "session_open", { label: "fg", foreground: true });
+    expect(s.ok && s.value.foreground).toBe(true);
+    const t = await call(client, "tab_create", { session: s.ok && s.value.session });
+    expect(t.ok).toBe(true);
+    expect(opsOf(ext, "tab_create").at(-1)?.session).toEqual({ short_id: s.ok && s.value.short_id, label: "fg", foreground: true });
+    expect(d.registry.getByShortId(s.ok && s.value.short_id)?.foreground).toBe(true);
+
+    const off = await call(client, "session_open", { label: "off", foreground: false });
+    expect(off.ok && off.value.foreground).toBe(undefined);
+    expect(errCode(await call(client, "session_open", { label: "bad", foreground: "yes" }))).toBe("invalid_args");
+  });
+
   it("with an older extension, session_open keeps the group but warns, and the group is never sent", async () => {
     const { client, ext } = await legacyExt();
     const a = await openIn(client, "a", "Research");

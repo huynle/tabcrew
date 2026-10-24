@@ -14,6 +14,8 @@ export interface Session {
    * extension's default group. Changes when the group is renamed (`renameGroup`).
    */
   group?: string;
+  /** Page ops may activate this session's tab (`session_open({foreground: true})`). */
+  readonly foreground?: true;
   readonly created_at: number;
   last_used_at: number;
   /** Set when the user pressed Stop; every call then fails with `stopped_by_user`. */
@@ -34,6 +36,7 @@ interface PersistedSession {
   short_id: string;
   label: string;
   group?: string;
+  foreground?: boolean;
   created_at: number;
   last_used_at: number;
   stopped?: boolean;
@@ -75,7 +78,12 @@ export function normaliseLabel(label: string | undefined): string {
 }
 
 export function sessionRef(session: Session): V2SessionRef {
-  return { short_id: session.short_id, label: session.label, ...(session.group !== undefined && { group: session.group }) };
+  return {
+    short_id: session.short_id,
+    label: session.label,
+    ...(session.group !== undefined && { group: session.group }),
+    ...(session.foreground && { foreground: true as const }),
+  };
 }
 
 /**
@@ -104,7 +112,7 @@ export class SessionRegistry {
   }
 
   /** Open a session; an invalid `group` (see `v2NormaliseGroupName`) means the default group. */
-  open(label?: string, group?: string): { handle: string; session: Session } {
+  open(label?: string, group?: string, foreground = false): { handle: string; session: Session } {
     const handle = `s_${randomBytes(16).toString("base64url")}`;
     let shortId = newShortId();
     while (this.byShortId.has(shortId)) shortId = newShortId();
@@ -115,6 +123,7 @@ export class SessionRegistry {
       short_id: shortId,
       label: normaliseLabel(label),
       ...(groupName !== null && { group: groupName }),
+      ...(foreground && { foreground: true as const }),
       created_at: t,
       last_used_at: t,
       stopped: false,
@@ -354,6 +363,7 @@ export class SessionRegistry {
         short_id: raw.short_id,
         label: normaliseLabel(raw.label),
         ...(group !== null && { group }),
+        ...(raw.foreground === true && { foreground: true as const }),
         created_at: Number(raw.created_at) || this.now(),
         last_used_at: Number(raw.last_used_at) || this.now(),
         stopped: raw.stopped === true,
@@ -381,6 +391,7 @@ export class SessionRegistry {
       short_id: s.short_id,
       label: s.label,
       ...(s.group !== undefined && { group: s.group }),
+      ...(s.foreground && { foreground: true }),
       created_at: s.created_at,
       last_used_at: s.last_used_at,
       ...(s.stopped && { stopped: true }),

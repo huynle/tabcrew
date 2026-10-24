@@ -326,6 +326,8 @@ You choose in the popup, under **New agent tabs open in:**. A session keeps the 
 
 Named groups (`session_open` with `group`, or **New group** in the popup) apply to the shared placement; the other two always give each session its own group. In every placement, TabCrew never focuses a window except when you click in the popup.
 
+**Agent tabs stay in the background.** By default TabCrew never makes an agent's tab the active tab, in any placement, so it never switches what you're looking at, even if the TabCrew window is the one you work in. The trade-off: Chrome throttles background tabs, so page work can be slower. An agent can opt in with `session_open({foreground: true})`: its tab is then made the active tab of its window while it works (inside your window only in the shared and own-window placements; never in **My current window**), and foreground agents take turns on the active tab as described above. Agents are told to use it only when you ask.
+
 **Ownership is per tab.** The extension records which session opened each tab, and which groups and window are TabCrew's, by id, and checks this on every call. Agents only see and control their own tabs, even inside a shared group. Pop-ups and links an agent's tab opens in a new tab join that agent's session. A tab you drag into a TabCrew group belongs to nobody, a TabCrew group you move to another window stops being TabCrew's, and your own tab groups are never touched. Renaming a TabCrew group in Chrome itself is fine, since groups are tracked by id, not title. When Chrome restarts, tab ids change, so TabCrew forgets all of this: old TabCrew tabs become yours, and sessions still running across the restart lose their tabs.
 
 Chrome may show TabCrew groups as saved-group chips on the bookmarks bar. That is Chrome's own saved tab groups feature; TabCrew doesn't create bookmarks.
@@ -471,8 +473,8 @@ Measured on the development machine: the 3-agent isolation run went from 20.6 s 
 - Modal detection relies on `<dialog>` opened with `showModal()`, `aria-modal="true"`, or a `role="dialog"` surrounded by a full-screen backdrop; other overlays still block clicks behind them (`target_covered`).
 - Jev does not yet close popups or overlays that cover its target.
 - `tab_create` returns before the page has loaded; use `navigate` or `browse` next.
-- In the shared TabCrew window, agents take turns on the active tab, so heavy parallel page work is slower than with **Their own window each**.
-- Background tabs are slower in "My current window" placement because Chrome throttles tabs you aren't looking at.
+- Agent tabs work in the background by default, which Chrome throttles; pages can be slower and screenshots of a background tab can occasionally time out. `session_open({foreground: true})` trades that for switching the window's visible tab.
+- Foreground agents in the shared TabCrew window take turns on the active tab, so heavy parallel page work is slower than with **Their own window each**.
 - After a Chrome restart, TabCrew no longer knows which tabs were its own (tab ids change): old TabCrew tabs become yours, and sessions still running lose their tabs.
 - No iframes, shadow DOM, canvas content or file uploads.
 

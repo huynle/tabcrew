@@ -60,9 +60,12 @@ export const GROUPS_UNSUPPORTED_MESSAGE =
 
 /** The session ref as an extension sees it: `group` only for extensions that understand it. */
 function refFor(session: V2SessionRef, groups: boolean): V2SessionRef {
-  return groups && session.group !== undefined
-    ? { short_id: session.short_id, label: session.label, group: session.group }
-    : { short_id: session.short_id, label: session.label };
+  return {
+    short_id: session.short_id,
+    label: session.label,
+    ...(groups && session.group !== undefined && { group: session.group }),
+    ...(session.foreground && { foreground: true as const }),
+  };
 }
 
 export const CLOSE_BAD_HELLO = 4401;

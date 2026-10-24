@@ -7,7 +7,7 @@ import type { Placement } from "./config.js";
 import { requireTabId, type TabManager } from "./tabs.js";
 
 export const BACKGROUND_SCREENSHOT_TIMEOUT =
-  "tab is in the background; screenshots of background tabs may fail in 'My current window' mode";
+  "tab is in the background and Chrome did not paint it in time; retry, or open the session with session_open({foreground: true})";
 
 /** CDP commands that issue a navigation: navigate releases its window lock once one of them answered. */
 const NAVIGATION_COMMANDS: ReadonlySet<string> = new Set(["Page.navigate", "Page.reload", "Page.navigateToHistoryEntry"]);
@@ -54,8 +54,8 @@ export async function handleRequest(req: V2Request, deps: OpDeps): Promise<unkno
     case "screenshot": {
       const tabId = requireTabId(args);
       return withPage(deps, session, tabId, (tab, placement) => {
-        // A user_window tab is never activated, and Chrome may not paint a hidden tab.
-        const background = !tab.active && placement === "user_window";
+        // Background tabs are not activated, and Chrome may not paint a hidden tab.
+        const background = !tab.active;
         return deps.cdp.screenshot(tabId, args, background ? { timeoutMessage: BACKGROUND_SCREENSHOT_TIMEOUT } : {});
       });
     }
@@ -103,9 +103,10 @@ export async function handleRequest(req: V2Request, deps: OpDeps): Promise<unkno
 }
 
 /**
- * Ownership check, then (except for `user_window` sessions, whose tabs are never activated) the
- * window's FIFO page lock around "activate the tab + run the op": several agents share the
- * TabCrew window and Chrome only renders its active tab at full speed, so they take turns.
+ * Ownership check, then, only for `foreground` sessions (`session_open({foreground: true})`) outside
+ * `user_window`, the window's FIFO page lock around "activate the tab + run the op": Chrome only
+ * renders a window's active tab at full speed, so foreground agents take turns. By default tabs
+ * stay in the background and are never activated: they must not take over the user's view.
  * Ownership is checked again once the lock is held (the session may have finished meanwhile).
  * `release` lets an op give the lock back early (navigate: once the navigation was issued).
  */
@@ -117,7 +118,7 @@ async function withPage<T>(
 ): Promise<T> {
   const first = await deps.tabs.assertOwned(session, tabId);
   const placement = await deps.tabs.placementFor(session.short_id);
-  if (placement === "user_window") return run(first, placement, () => undefined);
+  if (placement === "user_window" || session.foreground !== true) return run(first, placement, () => undefined);
   let result!: Promise<T>;
   await deps.tabs.pageLocks.run(`window:${first.windowId}`, async () => {
     const tab = await deps.tabs.assertOwned(session, tabId);

@@ -9,6 +9,7 @@ import { createFakeChrome, type FakeChrome } from "./test/fakes.js";
 
 const alice = { short_id: "aaaa1111", label: "alice" };
 const bob = { short_id: "bbbb2222", label: "bob" };
+const aliceFg = { ...alice, foreground: true as const };
 
 let fake: FakeChrome;
 let tabs: TabManager;
@@ -189,13 +190,22 @@ describe("navigate", () => {
     expect(sent("Page.navigate")).toHaveLength(0);
   });
 
+  it("by default navigates in the background: never activates the tab", async () => {
+    await ownedTab();
+    const second = await ownedTab("https://c.test/");
+    await call(alice, "navigate", { tab_id: second, action: "reload" });
+    expect(sent("Page.reload")).toHaveLength(1);
+    expect(fake.chrome.tabs.update).not.toHaveBeenCalled();
+    expect(fake.tabs.get(second)!.active).toBe(false);
+  });
+
   it("checks ownership and activates the tab without focusing", async () => {
     const first = await ownedTab();
     const second = await ownedTab("https://c.test/");
     await expect(call(bob, "navigate", { tab_id: first, action: "reload" })).rejects.toMatchObject({ code: "tab_not_owned" });
     expect(sent("Page.reload")).toHaveLength(0);
     expect(fake.tabs.get(second)!.active).toBe(false);
-    await call(alice, "navigate", { tab_id: second, action: "reload" });
+    await call(aliceFg, "navigate", { tab_id: second, action: "reload" });
     expect(fake.chrome.tabs.update).toHaveBeenCalledWith(second, { active: true });
     expect(fake.chrome.windows.update).not.toHaveBeenCalled();
   });

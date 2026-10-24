@@ -59,7 +59,7 @@ export const LOGS_DEFAULT = 50;
 export const LOGS_MAX = 200;
 
 const schemas = {
-  session_open: z.object({ label: z.string().max(200).optional(), group: z.string().max(200).optional() }),
+  session_open: z.object({ label: z.string().max(200).optional(), group: z.string().max(200).optional(), foreground: z.boolean().optional() }),
   session_close: z.object({ session: sessionArg, tabs: z.enum(V2_FINISH_MODES).optional() }),
   group_rename: z.object({ session: sessionArg, name: z.string().max(200), group: z.string().max(200).optional() }),
   group_list: z.object({ session: sessionArg }),
@@ -121,7 +121,7 @@ export const TOOL_DEFINITIONS: Tool[] = [
   {
     name: "session_open",
     description:
-      `Open a private browser session and get its handle. Open one session per agent or subagent, pass the handle on every call, and never share it. Your tabs open in one TabCrew window, in a tab group shared by all agents ("${V2_DEFAULT_GROUP_NAME}" unless the user renamed it); you only see and control your own tabs there. Pass group to join or create a named TabCrew group instead. When your task is finished, call session_close (close any throwaway tabs first with tab_close): by default your tabs are left for the user to review.`,
+      `Open a private browser session and get its handle. Open one session per agent or subagent, pass the handle on every call, and never share it. Your tabs open in one TabCrew window, in a tab group shared by all agents ("${V2_DEFAULT_GROUP_NAME}" unless the user renamed it); you only see and control your own tabs there. Pass group to join or create a named TabCrew group instead. Your tabs stay in the background and never become the user's active tab; pass foreground: true only if the user asks you to work visibly (faster pages, but it switches the user's visible tab). When your task is finished, call session_close (close any throwaway tabs first with tab_close): by default your tabs are left for the user to review.`,
     inputSchema: {
       type: "object",
       properties: {
@@ -129,6 +129,10 @@ export const TOOL_DEFINITIONS: Tool[] = [
         group: {
           type: "string",
           description: `Name of the TabCrew tab group to join, created if missing (${GROUP_NAME_RULES}). Default: the shared "${V2_DEFAULT_GROUP_NAME}" group.`,
+        },
+        foreground: {
+          type: "boolean",
+          description: "Make your tab the active tab of its window while you work on it (faster: Chrome slows background tabs), switching what the user sees. Default false: work in the background. Only when the user asks.",
         },
       },
     },
@@ -424,7 +428,7 @@ async function dispatch(ctx: ToolContext, name: ToolName, rawArgs: unknown): Pro
     case "session_open": {
       const args = parseArgs(name, rawArgs);
       const group = args.group === undefined ? undefined : groupNameArg("group", args.group);
-      const { handle, session } = registry.open(args.label, group);
+      const { handle, session } = registry.open(args.label, group, args.foreground === true);
       ctx.onSessionOpened?.(session);
       log.info(`session ${session.short_id} opened`);
       return ok({
@@ -432,6 +436,7 @@ async function dispatch(ctx: ToolContext, name: ToolName, rawArgs: unknown): Pro
         short_id: session.short_id,
         label: session.label,
         ...(session.group !== undefined && { group: session.group }),
+        ...(session.foreground && { foreground: true }),
         ...(session.group !== undefined && bridge.connected && !bridge.supportsGroups && { note: GROUPS_IGNORED_NOTE }),
       });
     }

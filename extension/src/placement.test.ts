@@ -11,6 +11,7 @@ import { createFakeChrome, type FakeChrome } from "./test/fakes.js";
 
 const alice = { short_id: "aaaa1111", label: "alice" };
 const bob = { short_id: "bbbb2222", label: "bob" };
+const bobFg = { ...bob, foreground: true as const };
 type Info = { tab_id: number };
 
 let fake: FakeChrome;
@@ -169,9 +170,9 @@ describe("user_window placement", () => {
   it("own_window sessions are still activated alongside user_window ones", async () => {
     const a = (await call(alice, "tab_create", {})) as Info;
     await setPlacement("own_window");
-    await call(bob, "tab_create", {});
-    const b2 = (await call(bob, "tab_create", {})) as Info;
-    await call(bob, "snapshot", { tab_id: b2.tab_id }).catch(() => undefined);
+    await call(bobFg, "tab_create", {});
+    const b2 = (await call(bobFg, "tab_create", {})) as Info;
+    await call(bobFg, "snapshot", { tab_id: b2.tab_id }).catch(() => undefined);
     await call(alice, "snapshot", { tab_id: a.tab_id }).catch(() => undefined);
     expect(fake.chrome.tabs.update.mock.calls).toEqual([[b2.tab_id, { active: true }]]);
   });
@@ -394,7 +395,7 @@ describe("popup placement radios", () => {
     const options = [
       [/<input type="radio" name="placement" value="shared_window" checked \/> One TabCrew window, shared group \(default\)/, "Fastest to start"],
       [/<input type="radio" name="placement" value="own_window" \/> Their own window each/, "Best for many agents at once"],
-      [/<input type="radio" name="placement" value="user_window" \/> My current window/, "Slower: Chrome throttles tabs you aren't looking at. Agents never switch your current tab."],
+      [/<input type="radio" name="placement" value="user_window" \/> My current window/, "Agents never switch your current tab."],
     ] as const;
     let last = 0;
     for (const [radio, note] of options) {
@@ -403,6 +404,6 @@ describe("popup placement radios", () => {
       expect(html.indexOf(note, at), note).toBeGreaterThan(at);
       last = html.indexOf(note, at);
     }
-    expect(html).toContain("agents take turns on the active tab");
+    expect(html).toContain("working in the background");
   });
 });

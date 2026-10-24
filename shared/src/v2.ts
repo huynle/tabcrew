@@ -64,6 +64,12 @@ export interface V2SessionRef {
    * Older daemons never send it; older extensions ignore it.
    */
   readonly group?: string;
+  /**
+   * `session_open({foreground: true})`: page ops make the session's tab the active tab of its
+   * window (faster: Chrome throttles background tabs). Missing: the tabs stay in the background
+   * and never take over the user's view. Older extensions ignore it (they always activate).
+   */
+  readonly foreground?: true;
 }
 
 // ---------------------------------------------------------------------------

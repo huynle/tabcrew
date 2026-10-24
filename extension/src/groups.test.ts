@@ -13,6 +13,8 @@ import { createFakeChrome, flush, type FakeChrome } from "./test/fakes.js";
 
 const alice: V2SessionRef = { short_id: "aaaa1111", label: "alice" };
 const bob: V2SessionRef = { short_id: "bbbb2222", label: "bob" };
+const aliceFg: V2SessionRef = { ...alice, foreground: true };
+const bobFg: V2SessionRef = { ...bob, foreground: true };
 const carol: V2SessionRef = { short_id: "cccc3333", label: "carol", group: "Research" };
 const dave: V2SessionRef = { short_id: "dddd4444", label: "dave", group: "Research" };
 type Info = { tab_id: number; url: string };
@@ -140,10 +142,38 @@ describe("shared_window placement (default)", () => {
     expect(groupOf(next).title).toBe("TabCrew");
   });
 
-  it("page ops activate the target tab inside the TabCrew window only", async () => {
+  it("by default page ops never activate a tab or focus a window, even in the user's view", async () => {
     const a = await create(alice);
     const b = await create(bob);
-    await call(bob, "screenshot", { tab_id: b.tab_id });
+    for (const [who, tab] of [[alice, a], [bob, b]] as const) {
+      await call(who, "screenshot", { tab_id: tab.tab_id });
+      await call(who, "snapshot", { tab_id: tab.tab_id }).catch(() => undefined);
+      await call(who, "read_text", { tab_id: tab.tab_id }).catch(() => undefined);
+      await call(who, "act", { tab_id: tab.tab_id, fingerprint: "f", action_id: "e1" }).catch(() => undefined);
+    }
+    expect(fake.chrome.tabs.update).not.toHaveBeenCalled();
+    expect(fake.chrome.windows.update).not.toHaveBeenCalled();
+    expect(tabOf(b).active).toBe(false);
+    expect(user.tab.active).toBe(true);
+  });
+
+  it("background sessions do not wait for each other's page ops", async () => {
+    const a = await create(alice);
+    const b = await create(bob);
+    const first = deferred<never>();
+    const snap = vi.spyOn(page, "snapshot").mockImplementation((tabId: number) => (tabId === a.tab_id ? first.promise : Promise.resolve({} as never)));
+    const pa = call(alice, "snapshot", { tab_id: a.tab_id });
+    await flush(20);
+    await call(bob, "snapshot", { tab_id: b.tab_id });
+    expect(snap).toHaveBeenCalledTimes(2);
+    first.resolve({} as never);
+    await pa;
+  });
+
+  it("page ops activate the target tab inside the TabCrew window only", async () => {
+    const a = await create(aliceFg);
+    const b = await create(bobFg);
+    await call(bobFg, "screenshot", { tab_id: b.tab_id });
     expect(fake.chrome.tabs.update).toHaveBeenCalledWith(b.tab_id, { active: true });
     expect(tabOf(b).active).toBe(true);
     expect(tabOf(a).active).toBe(false);
@@ -378,9 +408,9 @@ describe("ownership persistence", () => {
 
 describe("activation lock (per window, FIFO)", () => {
   async function twoAgents() {
-    await create(alice);
-    const a2 = await create(alice);
-    const b = await create(bob);
+    await create(aliceFg);
+    const a2 = await create(aliceFg);
+    const b = await create(bobFg);
     expect(tabOf(a2).active || tabOf(b).active).toBe(false);
     return { a2, b };
   }
@@ -394,8 +424,8 @@ describe("activation lock (per window, FIFO)", () => {
       if (tabId === a2.tab_id) return first.promise;
       return {} as never;
     });
-    const pa = call(alice, "snapshot", { tab_id: a2.tab_id });
-    const pb = call(bob, "snapshot", { tab_id: b.tab_id });
+    const pa = call(aliceFg, "snapshot", { tab_id: a2.tab_id });
+    const pb = call(bobFg, "snapshot", { tab_id: b.tab_id });
     await flush(50);
     expect(snap).toHaveBeenCalledTimes(1);
     expect(tabOf(a2).active).toBe(true);
@@ -411,8 +441,8 @@ describe("activation lock (per window, FIFO)", () => {
     const first = deferred<never>();
     vi.spyOn(page, "act").mockImplementation(() => first.promise);
     const shot = vi.spyOn(cdp, "screenshot");
-    const pa = call(alice, "act", { tab_id: a2.tab_id, fingerprint: "f", action_id: "e1" });
-    const pb = call(bob, "screenshot", { tab_id: b.tab_id });
+    const pa = call(aliceFg, "act", { tab_id: a2.tab_id, fingerprint: "f", action_id: "e1" });
+    const pb = call(bobFg, "screenshot", { tab_id: b.tab_id });
     await flush(50);
     expect(shot).not.toHaveBeenCalled();
     first.resolve({ executed: "x", page_changed: null } as never);
@@ -456,11 +486,11 @@ describe("activation lock (per window, FIFO)", () => {
     const { a2, b } = await twoAgents();
     const first = deferred<never>();
     vi.spyOn(page, "snapshot").mockImplementation((tabId: number) => (tabId === a2.tab_id ? first.promise : Promise.resolve({} as never)));
-    const pa = call(alice, "snapshot", { tab_id: a2.tab_id });
+    const pa = call(aliceFg, "snapshot", { tab_id: a2.tab_id });
     await flush(20);
-    const pb = call(bob, "snapshot", { tab_id: b.tab_id });
+    const pb = call(bobFg, "snapshot", { tab_id: b.tab_id });
     await flush(20);
-    await call(bob, "session_release", { tabs: "keep" });
+    await call(bobFg, "session_release", { tabs: "keep" });
     first.resolve({} as never);
     await pa;
     await expect(pb).rejects.toMatchObject({ code: "tab_not_owned" });

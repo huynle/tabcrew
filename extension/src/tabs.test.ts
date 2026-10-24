@@ -8,6 +8,8 @@ import { createFakeChrome, type FakeChrome } from "./test/fakes.js";
 
 const alice = { short_id: "aaaa1111", label: "alice" };
 const bob = { short_id: "bbbb2222", label: "bob" };
+const aliceFg = { ...alice, foreground: true as const };
+const bobFg = { ...bob, foreground: true as const };
 
 let fake: FakeChrome;
 let events: V2Event[];
@@ -358,7 +360,7 @@ describe("activation", () => {
   ] as const)("%s on a non-active owned tab activates it once, without focusing", async (op, extra) => {
     const { first, second } = await twoTabs();
     // The fake CDP has no page behind it, so snapshot itself fails; activation precedes it.
-    const run = () => call(alice, op, { tab_id: second, ...extra }).catch(() => undefined);
+    const run = () => call(aliceFg, op, { tab_id: second, ...extra }).catch(() => undefined);
     await run();
     expect(fake.chrome.tabs.update).toHaveBeenCalledTimes(1);
     expect(fake.chrome.tabs.update).toHaveBeenCalledWith(second, { active: true });
@@ -372,7 +374,7 @@ describe("activation", () => {
   it("act on a non-active owned tab activates it once, without focusing", async () => {
     const { second } = await twoTabs();
     // A bogus fingerprint still goes through ownership + activation before act validates it.
-    await call(alice, "act", { tab_id: second, fingerprint: "nope", action_id: "e1" }).catch(() => undefined);
+    await call(aliceFg, "act", { tab_id: second, fingerprint: "nope", action_id: "e1" }).catch(() => undefined);
     expect(fake.chrome.tabs.update).toHaveBeenCalledTimes(1);
     expect(fake.chrome.tabs.update).toHaveBeenCalledWith(second, { active: true });
     expectNoFocus();
