@@ -116,13 +116,21 @@ describe("several browsers per user", () => {
     }
   });
 
-  it("closing the MCP connection ends the sessions it opened", async () => {
+  it("a session outlives the MCP connection that opened it (gateways connect per call)", async () => {
     const home = await browser(ALICE, "home-mac");
-    const { call, client } = await agent(ALICE);
-    const s = await call("session_open", {});
-    await call("tab_create", { session: s.value.session });
-    await (client.transport as unknown as { terminateSession(): Promise<void> }).terminateSession();
-    await client.close();
-    await until(() => home.ext.requests.some((r) => r.op === "session_release" || r.op === "session_close"));
+    const first = await agent(ALICE);
+    const s = await first.call("session_open", {});
+    await first.call("tab_create", { session: s.value.session });
+    await (first.client.transport as unknown as { terminateSession(): Promise<void> }).terminateSession();
+    await first.client.close();
+    await new Promise((r) => setTimeout(r, 200));
+    expect(home.ext.requests.some((r) => r.op === "session_release" || r.op === "session_close")).toBe(false);
+
+    const second = await agent(ALICE);
+    const listed = await second.call("tab_list", { session: s.value.session });
+    expect(listed.isError).toBe(false);
+    expect(listed.value.tabs).toHaveLength(1);
+    const closed = await second.call("session_close", { session: s.value.session });
+    expect(closed.isError).toBe(false);
   });
 });

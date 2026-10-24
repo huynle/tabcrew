@@ -2,8 +2,7 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema, type CallToolResult, type Tool } from "@modelcontextprotocol/sdk/types.js";
 import { log } from "@tabcrew/daemon/dist/log.js";
 import { SERVER_INSTRUCTIONS } from "@tabcrew/daemon/dist/mcp/protocol.js";
-import { callTool, closeSession, TOOL_DEFINITIONS, type ToolContext } from "@tabcrew/daemon/dist/mcp/tools.js";
-import type { Session } from "@tabcrew/daemon/dist/sessions.js";
+import { callTool, TOOL_DEFINITIONS, type ToolContext } from "@tabcrew/daemon/dist/mcp/tools.js";
 import type { V2ErrorCode } from "@tabcrew/shared/v2";
 import type { Store } from "./store/types.js";
 import type { BrowserTenant, TenantManager } from "./tenants.js";
@@ -32,7 +31,7 @@ export const RELAY_TOOLS: Tool[] = [
   },
 ];
 
-export const RELAY_INSTRUCTIONS = `${SERVER_INSTRUCTIONS} This is TabCrew Online: the user's browsers connect through a relay. If the user has several browsers signed in, call browser_list and pass session_open({browser}).`;
+export const RELAY_INSTRUCTIONS = `${SERVER_INSTRUCTIONS} This is TabCrew Online: the user's browsers connect through a relay. If the user has several browsers signed in, call browser_list and pass session_open({browser}). Here a session does not end when your MCP connection does (gateways connect per call): always finish with session_close; sessions left open end after 30 minutes unused.`;
 
 const BAD_SESSION = "unknown or closed session; call session_open and use the returned handle";
 
@@ -58,28 +57,16 @@ export interface RelayProtocolDeps {
  * One MCP protocol server per MCP session of one user. session_open picks a browser and the
  * returned handle is remembered with it; every other tool runs in the core of the browser its
  * handle belongs to. Handles of other users are unknown here (bad_session, like a made-up one).
- * Sessions opened over this connection end when it closes, as in the daemon.
+ * Unlike the daemon, sessions do NOT end when this connection closes: MCP gateways open a new
+ * connection per tool call, and a handle (secret, bound to the user) may be used from any of them.
+ * Sessions end on session_close or after the idle timeout.
  */
 export function createRelayProtocolServer(d: RelayProtocolDeps): Server {
   const server = new Server({ name: "tabcrew", version: d.version }, { capabilities: { tools: {} }, instructions: RELAY_INSTRUCTIONS });
-  const opened: { tenant: BrowserTenant; session: Session }[] = [];
   const now = d.now ?? Date.now;
 
-  const ctxFor = (tenant: BrowserTenant): ToolContext => ({
-    ...tenant.core.ctx,
-    onSessionOpened: (session) => opened.push({ tenant, session }),
-  });
+  const ctxFor = (tenant: BrowserTenant): ToolContext => tenant.core.ctx;
 
-  server.onclose = () => {
-    if (d.isShuttingDown()) return;
-    for (const { tenant, session } of opened.splice(0)) {
-      void closeSession(tenant.core.ctx, session, !session.stopped)
-        .then((r) => {
-          if (r.closed) log.info(`session ${session.short_id} ended (MCP connection ended; ${r.kept_tabs} tab(s) handed to the user)`);
-        })
-        .catch(() => {});
-    }
-  };
 
   async function browserList() {
     const live = new Map(d.tenants.ofUser(d.userId).map((t) => [t.browserId, t]));
