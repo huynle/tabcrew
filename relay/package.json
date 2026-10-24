@@ -8,6 +8,7 @@
   "main": "dist/main.js",
   "scripts": {
     "build": "tsc",
+    "gen-privacy": "node scripts/gen-privacy.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "start": "node dist/main.js",
@@ -24,6 +25,7 @@
     "@types/node": "^25.5.2",
     "@types/pg": "^8.15.0",
     "@types/ws": "^8.5.0",
+    "marked": "^18.1.1",
     "typescript": "^5.7.0",
     "vitest": "^4.1.0"
   }

@@ -13,6 +13,7 @@ import { AccountPages } from "./account.js";
 import type { Provider } from "./auth/providers.js";
 import { AuthServer } from "./auth/server.js";
 import { bearer, readBody, sendJson } from "./http.js";
+import { sitePage } from "./site.js";
 import { clientIp, DEFAULT_LIMITS, TokenBucket, type Limits } from "./limits.js";
 import { createRelayProtocolServer } from "./mcpServer.js";
 import type { Store } from "./store/types.js";
@@ -127,6 +128,7 @@ export async function startRelay(o: RelayOptions): Promise<RunningRelay> {
         }
       }
     }
+    if (sitePage(req, res, url, publicUrl)) return;
     if (await account!.handle(req, res, url)) return;
     if (await auth!.handle(req, res, url)) return;
     sendJson(res, 404, { error: "not_found" });
