@@ -13,6 +13,8 @@ export interface AccountDeps {
   readonly providers: readonly Provider[];
   readonly tenants: TenantManager;
   readonly signingKey: Buffer;
+  /** Refresh token lifetime: a grant's last sign-in or refresh was this long before its expiry. */
+  readonly refreshTtlMs: number;
   /** End a client's access at once: its access tokens stop working and its MCP sessions close. */
   revokeClient(userId: string, clientId: string): void;
 }
@@ -51,7 +53,7 @@ export class AccountPages {
       return false;
     }
     if (!claims || !cookie) return this.forbidden(res, "Sign in again.");
-    if (req.headers.origin !== new URL(this.d.publicUrl).origin) return this.forbidden(res, "Cross-site request refused.");
+    if (!this.sameOrigin(req)) return this.forbidden(res, "Cross-site request refused.");
     let form: URLSearchParams;
     try {
       form = new URLSearchParams(String((await readBody(req, 16 * 1024, "text")) ?? ""));
@@ -83,6 +85,16 @@ export class AccountPages {
     return true;
   }
 
+  /**
+   * The POST came from this site's own page: Origin is the relay's origin, or (browsers send
+   * `Origin: null` under some referrer policies) the browser-set Sec-Fetch-Site says same-origin.
+   */
+  private sameOrigin(req: IncomingMessage): boolean {
+    const origin = req.headers.origin;
+    if (origin === new URL(this.d.publicUrl).origin) return true;
+    return (origin === undefined || origin === "null") && req.headers["sec-fetch-site"] === "same-origin";
+  }
+
   private csrf(cookie: string): string {
     return hmac(this.d.signingKey, `csrf|${cookie}`);
   }
@@ -109,8 +121,15 @@ export class AccountPages {
     const live = new Map(this.d.tenants.ofUser(userId).map((t) => [t.browserId, t]));
     const browsers = await this.d.store.listBrowsers(userId);
     const grants = await this.d.store.listGrants(userId);
-    const clientIds = [...new Set(grants.filter((g) => g.audience === "mcp").map((g) => g.clientId))];
-    const clients = (await Promise.all(clientIds.map((id) => this.d.store.getClient(id)))).filter((c) => c !== null);
+    const lastActive = new Map<string, number>();
+    for (const g of grants) {
+      if (g.audience !== "mcp") continue;
+      lastActive.set(g.clientId, Math.max(lastActive.get(g.clientId) ?? 0, g.expiresAt - this.d.refreshTtlMs));
+    }
+    const clients = (await Promise.all([...lastActive.keys()].map((id) => this.d.store.getClient(id))))
+      .filter((c) => c !== null)
+      .sort((a, b) => (lastActive.get(b.id) ?? 0) - (lastActive.get(a.id) ?? 0));
+    const when = (ms: number) => new Date(ms).toISOString().slice(0, 16).replace("T", " ") + " UTC";
 
     const hidden = (name: string, value: string) => `<input type="hidden" name="${name}" value="${escapeHtml(value)}">`;
     const browserRows = browsers.length
@@ -125,7 +144,7 @@ export class AccountPages {
     const clientRows = clients.length
       ? clients
           .map(
-            (c) => `<li><b>${escapeHtml(c.name)}</b>
+            (c) => `<li><b>${escapeHtml(c.name)}</b> <span class="small">signed in or refreshed ${when(lastActive.get(c.id) ?? 0)} · …${escapeHtml(c.id.slice(-6))}</span>
 <form method="post" action="/account/revoke-client">${hidden("csrf", csrf)}${hidden("client_id", c.id)}<button>Revoke</button></form></li>`,
           )
           .join("\n")
@@ -134,7 +153,8 @@ export class AccountPages {
 <h2>Agents</h2><ul>${clientRows}</ul>
 <p class="small">Revoking signs it out at once; it has to sign in again to come back.</p>
 <form method="post" action="/account/logout">${hidden("csrf", csrf)}<button>Sign out of this page</button></form>`;
-    sendHtml(res, 200, layout("Your TabCrew account", body), { forms: true });
+    // same-origin (not no-referrer): Chrome then sends the real Origin with these forms.
+    sendHtml(res, 200, layout("Your TabCrew account", body), { forms: true, headers: { "referrer-policy": "same-origin" } });
   }
 }
 

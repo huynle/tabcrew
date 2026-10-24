@@ -70,6 +70,7 @@ describe("/account", () => {
     const page = await accountPage(cookie);
     expect(page.html).toContain("home-mac");
     expect(page.html).toContain("Test agent");
+    expect(page.html).toMatch(/signed in or refreshed \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC/);
     expect(page.csrf).toMatch(/.{20,}/);
   });
 
@@ -131,6 +132,35 @@ describe("/account", () => {
     expect(cross.status).toBe(403);
     const refresh = await token(t.url, { grant_type: "refresh_token", refresh_token: ext.refresh_token, client_id: "tabcrew-extension" });
     expect(refresh.status).toBe(200);
+  });
+
+  it("accepts a real browser's same-origin form post (Origin: null + Sec-Fetch-Site: same-origin)", async () => {
+    const ext = await extLogin(t, ALICE, "home-mac");
+    const cookie = await accountLogin(ALICE);
+    const { csrf } = await accountPage(cookie);
+    const res = await fetch(`${t.url}/account/revoke-browser`, {
+      method: "POST",
+      redirect: "manual",
+      headers: { cookie, "content-type": "application/x-www-form-urlencoded", origin: "null", "sec-fetch-site": "same-origin" },
+      body: new URLSearchParams({ csrf, browser_id: ext.browser_id }).toString(),
+    });
+    expect(res.status).toBe(303);
+    for (const site of ["cross-site", "same-site", "none"]) {
+      const other = await fetch(`${t.url}/account/logout`, {
+        method: "POST",
+        redirect: "manual",
+        headers: { cookie, "content-type": "application/x-www-form-urlencoded", origin: "null", "sec-fetch-site": site },
+        body: new URLSearchParams({ csrf }).toString(),
+      });
+      expect(other.status).toBe(403);
+    }
+  });
+
+  it("the account page sends the Origin on its own forms (Referrer-Policy same-origin)", async () => {
+    const cookie = await accountLogin(ALICE);
+    const res = await fetch(`${t.url}/account`, { headers: { cookie } });
+    expect(res.headers.get("referrer-policy")).toBe("same-origin");
+    expect(res.headers.get("content-security-policy")).toContain("form-action 'self'");
   });
 
   it("one user cannot revoke another user's browser", async () => {

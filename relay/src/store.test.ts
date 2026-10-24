@@ -88,6 +88,7 @@ function contract(name: string, make: () => Store, enabled = true) {
       await store.putRefresh(ext);
       await store.putRefresh({ ...base, hash: id(), family: id(), clientId: "old", audience: "mcp", browserId: null, expiresAt: Date.now() - 1 });
       const grants = await store.listGrants(user.id);
+      expect(grants.every((g) => g.expiresAt > Date.now())).toBe(true);
       expect(grants.map((g) => [g.family, g.clientId, g.audience, g.browserId]).sort()).toEqual(
         [
           [f1, "agent-1", "mcp", null],

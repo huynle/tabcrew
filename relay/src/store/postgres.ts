@@ -224,11 +224,11 @@ export class PostgresStore implements Store {
 
   async listGrants(userId: string): Promise<Grant[]> {
     const r = await this.pool.query(
-      `SELECT DISTINCT ON (family) family, client_id, audience, browser_id FROM refresh_tokens
+      `SELECT DISTINCT ON (family) family, client_id, audience, browser_id, expires_at FROM refresh_tokens
        WHERE user_id = $1 AND used = false AND revoked = false AND expires_at >= $2`,
       [userId, Date.now()],
     );
-    return r.rows.map((x: Row) => ({ family: x.family, clientId: x.client_id, audience: x.audience, browserId: x.browser_id }));
+    return r.rows.map((x: Row) => ({ family: x.family, clientId: x.client_id, audience: x.audience, browserId: x.browser_id, expiresAt: Number(x.expires_at) }));
   }
 
   async revokeGrants(userId: string, which: { clientId: string } | { browserId: string }): Promise<number> {

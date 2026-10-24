@@ -228,6 +228,7 @@ export async function startRelay(o: RelayOptions): Promise<RunningRelay> {
       const token = typeof hello?.token === "string" ? hello.token : null;
       const claims = auth!.verify(token, "ext");
       if (hello?.type !== "hello" || !claims?.bid) {
+        log.warn(`relay: refused a browser (${hello?.type !== "hello" ? "no hello" : token ? "invalid or expired ext token" : "no token"})`);
         ws.close(V2_CLOSE_BAD_HELLO, "bad hello");
         return;
       }
@@ -237,6 +238,7 @@ export async function startRelay(o: RelayOptions): Promise<RunningRelay> {
         .getBrowser(claims.bid)
         .then((browser) => {
           if (!browser || browser.userId !== claims.sub || browser.revoked) {
+            log.warn(`relay: refused a browser (${!browser ? "unknown browser" : browser.revoked ? "browser revoked" : "browser of another user"})`);
             ws.close(V2_CLOSE_BAD_HELLO, "sign-in revoked");
             return;
           }
@@ -273,6 +275,7 @@ export async function startRelay(o: RelayOptions): Promise<RunningRelay> {
     providers: o.providers,
     tenants,
     signingKey: o.signingKey,
+    refreshTtlMs: 30 * 24 * 3600 * 1000,
     revokeClient(userId, clientId) {
       for (const [key, until] of revokedClients) if (until <= now()) revokedClients.delete(key);
       revokedClients.set(`${userId}|${clientId}`, now() + accessTtlSec * 1000);

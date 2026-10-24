@@ -3,6 +3,7 @@ import { isTabcrewExtensionOrigin } from "@tabcrew/shared/product";
 import { newId, pkceMatches, randomToken, sha256, signAccess, verifyAccess, type AccessClaims } from "../crypto.js";
 import type { Audience, OAuthClient, Store } from "../store/types.js";
 import { readBody, sendHtml, sendJson, escapeHtml } from "../http.js";
+import { log } from "@tabcrew/daemon/dist/log.js";
 import type { Provider } from "./providers.js";
 
 /** The built-in public client the TabCrew extension signs in with (chrome.identity.launchWebAuthFlow). */
@@ -394,9 +395,13 @@ export class AuthServer {
     if (form.grant_type === "refresh_token") {
       const hash = sha256(form.refresh_token ?? "");
       const record = await this.o.store.getRefresh(hash);
-      if (!record || record.clientId !== clientId || record.expiresAt < this.now()) throw new OAuthError("invalid_grant", "invalid refresh token");
+      if (!record || record.clientId !== clientId || record.expiresAt < this.now()) {
+        log.warn(`auth: refresh refused (${!record ? "unknown token" : record.clientId !== clientId ? "wrong client" : "expired"})`);
+        throw new OAuthError("invalid_grant", "invalid refresh token");
+      }
       if (!(await this.o.store.markRefreshUsed(hash))) {
         // Already used (or revoked): someone else has this token. End the whole sign-in.
+        log.warn(`auth: refresh refused (${record.revoked ? "revoked" : "reused: sign-in ended"}; client ${clientId === EXTENSION_CLIENT_ID ? "extension" : "agent"})`);
         await this.o.store.revokeFamily(record.family);
         throw new OAuthError("invalid_grant", "refresh token reused; sign in again");
       }

@@ -61,6 +61,32 @@ const call = async (name, args) => {
   return { isError: !!r.isError, value: text ? JSON.parse(text.text) : null, raw: r };
 };
 
+if (process.argv[2] === "multi") {
+  const list = await call("browser_list", {});
+  const home = list.value?.browsers?.find((b) => b.name === "home-mac");
+  check("browser_list shows home-mac online", home?.online === true, JSON.stringify(list.value));
+  const s = await call("session_open", { label: "phase 4 live check", browser: "home-mac" });
+  check("session_open picks the named browser", !s.isError && s.value.browser === "home-mac", JSON.stringify(s.value).slice(0, 120));
+  const tab = await call("tab_create", { session: s.value.session });
+  const nav = await call("navigate", { session: s.value.session, tab_id: tab.value?.tab_id, url: "https://example.com/" });
+  check("drives the named real browser", !tab.isError && !nav.isError, nav.value?.url ?? JSON.stringify(nav.value));
+  await call("session_close", { session: s.value.session, tabs: "close" });
+  console.log(`OPEN_ACCOUNT ${RELAY}/account`);
+  console.log("waiting for this agent to be revoked on the account page (5 min max)...");
+  let revoked = false;
+  for (let i = 0; i < 150 && !revoked; i++) {
+    await new Promise((r) => setTimeout(r, 2000));
+    const r = await fetch(`${RELAY}/mcp`, { method: "POST", headers: { authorization: `Bearer ${tok.json.access_token}`, "content-type": "application/json" }, body: "{}" });
+    revoked = r.status === 401;
+  }
+  check("revoked on the account page: its unexpired access token is refused at once", revoked);
+  const again = await form({ grant_type: "refresh_token", refresh_token: JSON.parse(readFileSync(FILE, "utf8")).refresh_token, client_id: saved.client_id });
+  check("and its refresh token is dead", again.json.error === "invalid_grant");
+  if (!failed) rmSync(FILE, { force: true });
+  console.log(failed ? `\n${failed} check(s) failed` : "\nall phase 4 live checks passed");
+  process.exit(failed ? 1 : 0);
+}
+
 const s = await call("session_open", { label: "online live check" });
 check("session_open", !s.isError);
 const S = s.value.session;

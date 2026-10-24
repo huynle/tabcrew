@@ -472,12 +472,12 @@ export class ExtensionBridge {
       onFrame(frame);
     });
 
-    socket.on("close", () => {
+    socket.on("close", (code: number, reason: Buffer) => {
       clearTimeout(helloTimer);
       if (socket === this.active) {
         this.active = null;
         this.stopPing();
-        log.info("extension: disconnected");
+        log.info(`extension: disconnected (code ${code}${reason?.length ? `, ${reason.toString("utf8").slice(0, 80)}` : ""})`);
       }
       this.failPending(socket, "extension disconnected");
     });

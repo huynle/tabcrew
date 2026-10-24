@@ -36,6 +36,8 @@ export interface Grant {
   readonly clientId: string;
   readonly audience: Audience;
   readonly browserId: string | null;
+  /** Expiry of the family's live refresh token (it was issued refresh TTL before this). */
+  readonly expiresAt: number;
 }
 
 export interface RefreshRecord {

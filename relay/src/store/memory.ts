@@ -105,7 +105,7 @@ export class MemoryStore implements Store {
     const byFamily = new Map<string, Grant>();
     for (const r of this.refresh.values()) {
       if (r.userId !== userId || r.used || r.revoked || r.expiresAt < now) continue;
-      byFamily.set(r.family, { family: r.family, clientId: r.clientId, audience: r.audience, browserId: r.browserId });
+      byFamily.set(r.family, { family: r.family, clientId: r.clientId, audience: r.audience, browserId: r.browserId, expiresAt: r.expiresAt });
     }
     return [...byFamily.values()];
   }
