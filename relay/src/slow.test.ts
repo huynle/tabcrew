@@ -75,3 +75,13 @@ describe("slow and lost MCP replies are logged", () => {
     expect(lines.join("\n")).not.toContain(session);
   });
 });
+
+describe("keep-alive behind a reverse proxy", () => {
+  it("keeps idle connections open longer than Traefik's 90 s backend idle timeout", async () => {
+    t = await startTestRelay();
+    // Node's default (5 s) closes a pooled proxy connection just as the proxy reuses it,
+    // and that request is lost (seen through Traefik as "MCP reply cut off after 3 ms").
+    expect(t.relay.keepAliveTimeoutMs).toBeGreaterThan(90_000);
+    expect(t.relay.headersTimeoutMs).toBeGreaterThan(t.relay.keepAliveTimeoutMs);
+  });
+});

@@ -48,8 +48,17 @@ export interface RunningRelay {
   readonly url: string;
   readonly port: number;
   readonly tenants: TenantManager;
+  readonly keepAliveTimeoutMs: number;
+  readonly headersTimeoutMs: number;
   close(): Promise<void>;
 }
+
+/**
+ * Longer than any reverse proxy's idle timeout for backend connections (Traefik: 90 s). With Node's
+ * default 5 s, the relay closes a pooled proxy connection just as the proxy reuses it, and that
+ * request is lost: the client waits for its own timeout.
+ */
+const KEEP_ALIVE_TIMEOUT_MS = 120_000;
 
 const MAX_MCP_BODY = 4 * 1024 * 1024;
 /** Screenshots travel extension -> relay; keep the frame cap below the daemon's 64 MB. */
@@ -95,6 +104,8 @@ export async function startRelay(o: RelayOptions): Promise<RunningRelay> {
       sendJson(res, 500, { error: "internal" });
     });
   });
+  http.keepAliveTimeout = KEEP_ALIVE_TIMEOUT_MS;
+  http.headersTimeout = KEEP_ALIVE_TIMEOUT_MS + 5_000;
 
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = new URL(req.url ?? "/", "http://relay");
@@ -311,6 +322,8 @@ export async function startRelay(o: RelayOptions): Promise<RunningRelay> {
     url: publicUrl,
     port,
     tenants,
+    keepAliveTimeoutMs: http.keepAliveTimeout,
+    headersTimeoutMs: http.headersTimeout,
     async close() {
       shuttingDown = true;
       await Promise.allSettled([...mcpSessions.values()].map((s) => s.transport.close()));
