@@ -75,7 +75,8 @@ describe("bundles", () => {
     const reply = JSON.parse(pair.stdout.subarray(4, 4 + pair.stdout.readUInt32LE(0)).toString("utf8"));
     expect(reply).toEqual({ token: token.stdout.trim() });
     expect(pair.stderr.toString()).not.toContain(reply.token);
-  });
+    // Six bundled processes in a row: past vitest's default 5 s when the machine is busy.
+  }, 30_000);
 });
 
 /** A free TCP port on 127.0.0.1, at or above 18775 (8771 belongs to other tools on some machines). */
