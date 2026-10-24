@@ -40,6 +40,8 @@ export interface RelayOptions {
   readonly limits?: Partial<Limits>;
   /** Behind a reverse proxy: take the client IP from X-Forwarded-For (its right-most entry). */
   readonly trustProxy?: boolean;
+  /** Tool calls and MCP replies at least this slow are logged at info (default 10 s). */
+  readonly slowCallMs?: number;
 }
 
 export interface RunningRelay {
@@ -72,6 +74,7 @@ export async function startRelay(o: RelayOptions): Promise<RunningRelay> {
   const authBucket = new TokenBucket({ capacity: limits.authPerMinute, refillPerSec: limits.authPerMinute / 60, now });
   const mcpBucket = new TokenBucket({ capacity: limits.mcpBurst, refillPerSec: limits.mcpPerSecond, now });
   const accessTtlSec = o.accessTtlSec ?? 15 * 60;
+  const slowCallMs = o.slowCallMs ?? 10_000;
   /** `${userId}|${clientId}` -> until (ms): revoked clients whose access tokens may not have expired yet. */
   const revokedClients = new Map<string, number>();
   const tenants = new TenantManager({
@@ -134,6 +137,17 @@ export async function startRelay(o: RelayOptions): Promise<RunningRelay> {
     sendJson(res, 404, { error: "not_found" });
   }
 
+  /** Log MCP POST replies that were cut off before they were sent, or sent late (never args or ids). */
+  function watchReply(res: ServerResponse, body: unknown): void {
+    const started = now();
+    const what = describeRpc(body);
+    res.once("close", () => {
+      const ms = Math.round(now() - started);
+      if (!res.writableFinished) log.warn(`relay: MCP reply cut off after ${ms} ms (${what})`);
+      else if (ms >= slowCallMs) log.info(`relay: MCP reply sent after ${ms} ms (${what}, HTTP ${res.statusCode})`);
+    });
+  }
+
   async function handleMcp(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const verified = auth!.verify(bearer(req), "mcp");
     const revokedUntil = verified ? revokedClients.get(`${verified.sub}|${verified.cid}`) : undefined;
@@ -160,6 +174,7 @@ export async function startRelay(o: RelayOptions): Promise<RunningRelay> {
         sendJson(res, 400, { jsonrpc: "2.0", error: { code: -32700, message: (err as Error).message }, id: null });
         return;
       }
+      watchReply(res, body);
       if (existing) {
         await existing.transport.handleRequest(req, res, body);
         return;
@@ -178,6 +193,7 @@ export async function startRelay(o: RelayOptions): Promise<RunningRelay> {
       transport.onclose = () => {
         if (transport.sessionId) mcpSessions.delete(transport.sessionId);
       };
+      transport.onerror = (err) => log.warn(`relay: MCP transport error: ${String(err?.message ?? err).slice(0, 200)}`);
       await createRelayProtocolServer({
         userId: claims.sub,
         tenants,
@@ -186,6 +202,7 @@ export async function startRelay(o: RelayOptions): Promise<RunningRelay> {
         maxSessions: limits.maxSessions,
         isShuttingDown: () => shuttingDown,
         now,
+        slowCallMs,
       }).connect(transport);
       await transport.handleRequest(req, res, body);
       return;
@@ -305,4 +322,13 @@ export async function startRelay(o: RelayOptions): Promise<RunningRelay> {
       await o.store.close();
     },
   };
+}
+
+/** "tools/call act", "tools/list", "batch of 2", ...: the JSON-RPC method (and tool name) only. */
+function describeRpc(body: unknown): string {
+  if (Array.isArray(body)) return `batch of ${body.length}`;
+  const m = body as { method?: unknown; params?: { name?: unknown } } | undefined;
+  const method = typeof m?.method === "string" ? m.method.slice(0, 40) : "response";
+  const tool = method === "tools/call" && typeof m?.params?.name === "string" ? ` ${m.params.name.slice(0, 40)}` : "";
+  return method + tool;
 }

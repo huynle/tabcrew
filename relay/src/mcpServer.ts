@@ -51,6 +51,8 @@ export interface RelayProtocolDeps {
   readonly maxSessions: number;
   readonly isShuttingDown: () => boolean;
   readonly now?: () => number;
+  /** Tool calls at least this slow are logged at info (default 10 s). */
+  readonly slowCallMs?: number;
 }
 
 /**
@@ -122,16 +124,23 @@ export function createRelayProtocolServer(d: RelayProtocolDeps): Server {
     const name = request.params.name;
     const args = (request.params.arguments ?? {}) as Record<string, unknown>;
     let result: CallToolResult;
+    let tenant: BrowserTenant | undefined;
     if (name === "browser_list") {
       result = ok({ browsers: await browserList() });
     } else if (name === "session_open") {
       result = await openSession(args);
     } else {
-      const tenant = d.tenants.byHandle(d.userId, args.session);
+      tenant = d.tenants.byHandle(d.userId, args.session);
       // Unknown tools are reported by callTool; anything else needs a handle of this user.
       result = tenant ? await callTool(ctxFor(tenant), name, args) : RELAY_TOOLS.some((t) => t.name === name) ? fail("bad_session", BAD_SESSION) : await callTool({} as ToolContext, name, args);
     }
-    log.debug(`relay tool ${name} ${Math.round(now() - started)} ms${result.isError ? " error" : ""}`);
+    const ms = Math.round(now() - started);
+    if (ms >= (d.slowCallMs ?? 10_000)) {
+      const short = tenant?.core.registry.shortIdOf(args.session) ?? "-";
+      log.info(`relay: slow tool call ${name} ${ms} ms (session ${short}, browser ${tenant?.name ?? "-"})${result.isError ? " error" : ""}`);
+    } else {
+      log.debug(`relay tool ${name} ${ms} ms${result.isError ? " error" : ""}`);
+    }
     return result;
   });
   return server;

@@ -125,6 +125,11 @@ export class SessionRegistry {
     return { handle, session };
   }
 
+  /** The short_id of a handle's session, without marking it used (for logs). */
+  shortIdOf(handle: unknown): string | undefined {
+    return typeof handle === "string" && HANDLE_RE.test(handle) ? this.byKey.get(hashHandle(handle))?.short_id : undefined;
+  }
+
   /** Resolve a handle to its session and mark it used. Throws `bad_session` or `stopped_by_user`. */
   use(handle: unknown): Session {
     const session = typeof handle === "string" && HANDLE_RE.test(handle) ? this.byKey.get(hashHandle(handle)) : undefined;

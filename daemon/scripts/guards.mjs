@@ -208,7 +208,7 @@ async function guard(name, fn, { fresh = true } = {}) {
     console.log(`PASS  ${name}  (${Date.now() - t0} ms${detail ? `; ${detail}` : ""})`);
   } catch (err) {
     results.push(false);
-    console.log(`FAIL  ${name}  (${err instanceof Error ? err.message : String(err)})`);
+    console.log(`FAIL  ${name}  (${err instanceof Error ? err.message : String(err)}) at ${new Date().toISOString()}`);
   }
 }
 
