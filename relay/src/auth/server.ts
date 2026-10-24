@@ -184,9 +184,18 @@ export class AuthServer {
           return true;
       }
       const start = /^\/auth\/([a-z]+)$/.exec(url.pathname);
-      if (req.method === "GET" && start) {
-        await this.startProvider(res, url, start[1]!);
-        return true;
+      if (start) {
+        // The one-time txn is only spent by the page's POST form: browsers preload GET links (hover,
+        // prerender), which would use it up before the person clicks.
+        if (req.method === "POST") {
+          await this.startProvider(res, await readForm(req).catch(() => ({}) as Record<string, string>), start[1]!);
+          return true;
+        }
+        if (/prefetch|prerender/i.test(String(req.headers["sec-purpose"] ?? req.headers.purpose ?? ""))) {
+          res.writeHead(204, { "cache-control": "no-store" }).end();
+          return true;
+        }
+        throw new OAuthError("invalid_request", "Use the sign-in button on the previous page.", 405);
       }
       const callback = /^\/auth\/([a-z]+)\/callback$/.exec(url.pathname);
       if (req.method === "GET" && callback) {
@@ -287,10 +296,10 @@ export class AuthServer {
     this.signInPage(res, client, redirectUri, id, txn);
   }
 
-  private async startProvider(res: ServerResponse, url: URL, providerId: string): Promise<void> {
+  private async startProvider(res: ServerResponse, form: Record<string, string>, providerId: string): Promise<void> {
     const provider = this.o.providers.find((p) => p.id === providerId);
     if (!provider) throw new OAuthError("invalid_request", "Unknown sign-in provider.", 404);
-    const taken = await this.o.store.takeTxn(url.searchParams.get("txn") ?? "");
+    const taken = await this.o.store.takeTxn(form.txn ?? "");
     if (!taken || taken.expiresAt < this.now()) throw new OAuthError("invalid_request", "This sign-in link expired. Start again from your app.");
     // A fresh id for the provider leg, so the link on the sign-in page cannot be replayed.
     const state = randomToken();
@@ -446,9 +455,15 @@ export class AuthServer {
         ? `Connect this browser (<b>${escapeHtml(txn.browserName ?? "browser")}</b>) to TabCrew Online. Agents you sign in will be able to open and control tabs in it.`
         : `<b>${escapeHtml(client.name)}</b> (returning to <code>${escapeHtml(target.host)}</code>) wants to use TabCrew Online: it will be able to open and control tabs in the browsers you connected.`;
     const buttons = this.o.providers
-      .map((p) => `<a class="btn" href="/auth/${p.id}?txn=${encodeURIComponent(txnId)}">Continue with ${escapeHtml(p.label)}</a>`)
+      .map(
+        (p) =>
+          `<form method="post" action="/auth/${p.id}"><input type="hidden" name="txn" value="${escapeHtml(txnId)}"><button class="btn">Continue with ${escapeHtml(p.label)}</button></form>`,
+      )
       .join("\n");
-    sendHtml(res, 200, page("Sign in to TabCrew", `<p>${what}</p>\n${buttons}\n<p class="small">Only continue if you started this yourself.</p>`));
+    sendHtml(res, 200, page("Sign in to TabCrew", `<p>${what}</p>\n${buttons}\n<p class="small">Only continue if you started this yourself.</p>`), {
+      forms: true,
+      headers: { "referrer-policy": "same-origin" },
+    });
   }
 
   private errorPage(res: ServerResponse, status: number, message: string): void {
@@ -470,7 +485,7 @@ function page(title: string, body: string): string {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${escapeHtml(title)}</title>
 <style>body{font:16px/1.5 system-ui,sans-serif;max-width:28rem;margin:4rem auto;padding:0 1rem;color:#1d1d1f}
-h1{font-size:1.4rem}.btn{display:block;text-align:center;margin:.6rem 0;padding:.7rem;border:1px solid #888;border-radius:.5rem;color:inherit;text-decoration:none}
+h1{font-size:1.4rem}.btn{display:block;width:100%;font:inherit;background:none;cursor:pointer;text-align:center;margin:.6rem 0;padding:.7rem;border:1px solid #888;border-radius:.5rem;color:inherit;text-decoration:none}
 .btn:hover{background:#f2f2f2}.small{font-size:.85rem;color:#666}code{font-size:.9em}</style></head>
 <body><h1>${escapeHtml(title)}</h1>${body}</body></html>`;
 }

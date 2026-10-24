@@ -183,17 +183,35 @@ export async function authorize(url: string, p: AuthorizeParams): Promise<{ stat
   const page = await fetch(`${url}/authorize?${q}`, { redirect: "manual" });
   const html = await page.text();
   if (page.status !== 200) return { status: page.status, location: null, body: html };
-  const href = new RegExp(`href="(/auth/${p.provider ?? "github"}\\?txn=[^"]+)"`).exec(html)?.[1];
-  if (!href) throw new Error(`no ${p.provider ?? "github"} button on the sign-in page`);
-  let next = new URL(href.replace(/&amp;/g, "&"), url).toString();
-  // relay start -> provider authorize -> relay callback -> client redirect
-  for (let i = 0; i < 3; i++) {
+  const first = await submitProvider(url, html, p.provider ?? "github");
+  if (first.status !== 302 || !first.headers.get("location")) return { status: first.status, location: null, body: await first.text() };
+  let next = new URL(first.headers.get("location")!, url).toString();
+  // provider authorize -> relay callback -> client redirect
+  for (let i = 0; i < 2; i++) {
     const res = await fetch(next, { redirect: "manual" });
     const location = res.headers.get("location");
     if (res.status !== 302 || !location) return { status: res.status, location: null, body: await res.text() };
     next = new URL(location, next).toString();
   }
   return { status: 302, location: new URL(next), body: "" };
+}
+
+/** The sign-in page's provider form: action and the one-time txn. */
+export function providerForm(html: string, provider: string): { action: string; txn: string } {
+  const m = new RegExp(`<form method="post" action="(/auth/${provider})">\\s*<input type="hidden" name="txn" value="([^"]+)">`).exec(html);
+  if (!m) throw new Error(`no ${provider} button on the sign-in page`);
+  return { action: m[1]!, txn: m[2]! };
+}
+
+/** Click a provider button on the sign-in page (POST its form, as a browser does). */
+export function submitProvider(url: string, html: string, provider: string): Promise<Response> {
+  const f = providerForm(html, provider);
+  return fetch(new URL(f.action, url), {
+    method: "POST",
+    redirect: "manual",
+    headers: { "content-type": "application/x-www-form-urlencoded", origin: url },
+    body: new URLSearchParams({ txn: f.txn }).toString(),
+  });
 }
 
 export async function token(url: string, form: Record<string, string>): Promise<{ status: number; json: any }> {

@@ -6,8 +6,10 @@ import {
   extLogin,
   mcpLogin,
   pkce,
+  providerForm,
   register,
   startTestRelay,
+  submitProvider,
   token,
   type TestRelay,
 } from "./testing/harness.js";
@@ -160,12 +162,46 @@ describe("authorization code flow", () => {
       code_challenge_method: "S256",
     });
     const html = await (await fetch(`${t.url}/authorize?${q}`)).text();
-    const start = new URL(/href="(\/auth\/github\?txn=[^"]+)"/.exec(html)![1]!.replace(/&amp;/g, "&"), t.url);
-    const toProvider = await fetch(start, { redirect: "manual" });
+    const toProvider = await submitProvider(t.url, html, "github");
     const toRelay = await fetch(toProvider.headers.get("location")!, { redirect: "manual" });
     const callback = toRelay.headers.get("location")!;
     expect((await fetch(callback, { redirect: "manual" })).status).toBe(302);
     expect((await fetch(callback, { redirect: "manual" })).status).toBe(400);
+  });
+
+  describe("the one-time sign-in step survives browser link preloading", () => {
+    async function page() {
+      const reg = await register(t.url);
+      const q = new URLSearchParams({
+        response_type: "code",
+        client_id: reg.json.client_id,
+        redirect_uri: REDIRECT,
+        code_challenge: pkce().challenge,
+        code_challenge_method: "S256",
+      });
+      const res = await fetch(`${t.url}/authorize?${q}`);
+      return { html: await res.text(), csp: res.headers.get("content-security-policy") ?? "" };
+    }
+
+    it("buttons are POST forms: no link carries the one-time txn", async () => {
+      const { html, csp } = await page();
+      expect(html).not.toMatch(/href="[^"]*txn=/);
+      expect(providerForm(html, "github").txn).toMatch(/.{20,}/);
+      expect(providerForm(html, "google").txn).toMatch(/.{20,}/);
+      expect(csp).toContain("form-action 'self'");
+    });
+
+    it("a prefetch or a plain GET does not use up the txn", async () => {
+      const { html } = await page();
+      const { txn } = providerForm(html, "github");
+      const prefetch = await fetch(`${t.url}/auth/github?txn=${txn}`, { redirect: "manual", headers: { "sec-purpose": "prefetch" } });
+      expect(prefetch.status).toBe(204);
+      const get = await fetch(`${t.url}/auth/github?txn=${txn}`, { redirect: "manual" });
+      expect(get.status).toBe(405);
+      expect((await submitProvider(t.url, html, "github")).status).toBe(302);
+      // ...and it is still single use.
+      expect((await submitProvider(t.url, html, "github")).status).toBe(400);
+    });
   });
 
   it("sends the provider the relay's own callback URL", async () => {
