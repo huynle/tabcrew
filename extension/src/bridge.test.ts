@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { V2Request, V2Response } from "@tabcrew/shared/v2";
-import { Bridge, type BridgeDeps } from "./bridge.js";
+import { Bridge, SILENCE_MS, SILENT_CLOSE_CODE, type BridgeDeps } from "./bridge.js";
 import type { BridgeConfig } from "./config.js";
 import { FakeSocket, flush } from "./test/fakes.js";
 
@@ -108,6 +108,53 @@ describe("Bridge", () => {
       await vi.advanceTimersByTimeAsync(30_000);
     }
     expect(FakeSocket.instances).toHaveLength(13);
+  });
+
+  it("drops a silent connection after SILENCE_MS and reconnects at once (a dead path never closes by itself)", async () => {
+    const { bridge } = makeBridge({ current: { token: "t", port: 8771 } });
+    const ws = await connected(bridge);
+    await vi.advanceTimersByTimeAsync(SILENCE_MS - 1);
+    expect(ws.closed).toBeNull();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(ws.closed).toEqual({ code: SILENT_CLOSE_CODE });
+    expect(bridge.status).toBe("offline");
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(FakeSocket.instances).toHaveLength(2);
+    // The dead socket's late close changes nothing.
+    ws.onclose?.({ code: 1006 });
+    expect(FakeSocket.instances).toHaveLength(2);
+  });
+
+  it("server pings keep the connection alive", async () => {
+    const { bridge } = makeBridge({ current: { token: "t", port: 8771 } });
+    const ws = await connected(bridge);
+    for (let i = 0; i < 15; i++) {
+      await vi.advanceTimersByTimeAsync(20_000);
+      ws.serverSend({ type: "ping", t: i });
+    }
+    expect(ws.closed).toBeNull();
+    expect(FakeSocket.instances).toHaveLength(1);
+    expect(bridge.status).toBe("connected");
+  });
+
+  it("drops a socket stuck while connecting", async () => {
+    const { bridge } = makeBridge({ current: { token: "t", port: 8771 } });
+    await bridge.start();
+    const ws = FakeSocket.instances[0]!;
+    await vi.advanceTimersByTimeAsync(SILENCE_MS);
+    expect(ws.closed).toEqual({ code: SILENT_CLOSE_CODE });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(FakeSocket.instances).toHaveLength(2);
+  });
+
+  it("the keepalive alarm also drops a silent connection (timers may be throttled)", async () => {
+    let clock = 0;
+    const { bridge } = makeBridge({ current: { token: "t", port: 8771 } }, { now: () => clock });
+    const ws = await connected(bridge);
+    clock = SILENCE_MS + 1;
+    await bridge.ensureConnected();
+    expect(ws.closed).toEqual({ code: SILENT_CLOSE_CODE });
+    expect(FakeSocket.instances).toHaveLength(2);
   });
 
   it("replies pong to ping itself, then notifies onPing", async () => {

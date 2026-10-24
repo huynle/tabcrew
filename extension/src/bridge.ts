@@ -67,6 +67,13 @@ export const MAX_BACKOFF_MS = 30_000;
 export const HUB_MAX_BACKOFF_MS = 3_000;
 export const SLOW_SEND_MS = 200;
 const BASE_BACKOFF_MS = 1_000;
+/**
+ * The daemon, hub and relay ping every 20 s. A connection that delivers nothing for this long is
+ * dead even if it never closed (a broken path can leave the socket "open" for ~10 minutes, until
+ * the OS gives up on TCP): drop it and reconnect.
+ */
+export const SILENCE_MS = 60_000;
+export const SILENT_CLOSE_CODE = 4000;
 const OPEN = 1;
 
 /** HMAC-SHA256 (WebCrypto) with the hex-decoded `secretHex` as key over the UTF-8 `message`; lowercase hex. */
@@ -135,6 +142,9 @@ export class Bridge {
   private socket: SocketLike | null = null;
   private welcomed = false;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private silenceTimer: ReturnType<typeof setTimeout> | null = null;
+  /** When the current socket was opened or last delivered a frame (`now()`). */
+  private lastFrameAt = 0;
   private attempts = 0;
   private generation = 0;
   private blocked: Blocked | null = null;
@@ -210,6 +220,12 @@ export class Bridge {
 
   /** Alarm/wake hook: reconnect if nothing is connected or pending. */
   ensureConnected(): Promise<void> {
+    if (this.socket && this.now() - this.lastFrameAt >= SILENCE_MS) {
+      // The silence timer should have fired; offscreen timers can be throttled, the alarm is not.
+      this.dropSilent(this.socket, null);
+      this.clearTimer();
+      return this.start();
+    }
     if (this.socket || this.reconnectTimer !== null) return Promise.resolve();
     return this.start();
   }
@@ -265,6 +281,7 @@ export class Bridge {
     this.welcomed = false;
     this.pending.clear();
     this.modelPending.clear();
+    this.heard(socket, conn.mode);
 
     socket.onopen = () => {
       if (this.socket !== socket) return;
@@ -272,6 +289,7 @@ export class Bridge {
     };
     socket.onmessage = (ev) => {
       if (this.socket !== socket) return;
+      this.heard(socket, conn.mode);
       this.handleRaw(socket, conn, ev.data);
     };
     socket.onerror = () => {
@@ -279,6 +297,7 @@ export class Bridge {
     };
     socket.onclose = (ev) => {
       if (this.socket !== socket) return;
+      this.clearSilence();
       this.socket = null;
       this.welcomed = false;
       this.pending.clear();
@@ -465,8 +484,7 @@ export class Bridge {
 
   private sendOn(socket: SocketLike, frame: V2ExtensionFrame): boolean {
     if (socket !== this.socket || socket.readyState !== OPEN) return false;
-    const now = this.deps.now ?? (() => performance.now());
-    const started = now();
+    const started = this.now();
     try {
       socket.send(JSON.stringify(frame));
       return true;
@@ -474,7 +492,7 @@ export class Bridge {
       console.warn("[v2 bridge] send failed:", err);
       return false;
     } finally {
-      this.recordSend(now() - started);
+      this.recordSend(this.now() - started);
     }
   }
 
@@ -482,6 +500,36 @@ export class Bridge {
     this.sendStats.sends++;
     if (ms > SLOW_SEND_MS) this.sendStats.slow_sends_over_200ms++;
     if (ms > this.sendStats.max_send_ms) this.sendStats.max_send_ms = Math.round(ms);
+  }
+
+  private now(): number {
+    return (this.deps.now ?? (() => performance.now()))();
+  }
+
+  /** The socket is alive (opened or delivered a frame): restart its silence timer. */
+  private heard(socket: SocketLike, mode: ConnectionMode): void {
+    this.lastFrameAt = this.now();
+    this.clearSilence();
+    this.silenceTimer = setTimeout(() => {
+      this.silenceTimer = null;
+      if (this.socket === socket) this.dropSilent(socket, mode);
+    }, SILENCE_MS);
+  }
+
+  /** Drop a socket that went silent; `mode` schedules the usual backoff reconnect (null: the caller reconnects). */
+  private dropSilent(socket: SocketLike, mode: ConnectionMode | null): void {
+    console.warn(`[v2 bridge] nothing received for ${SILENCE_MS / 1000} s; reconnecting`);
+    if (this.socket !== socket) return;
+    this.dropSocket(SILENT_CLOSE_CODE, "silent");
+    this.setStatus("offline");
+    if (mode) this.scheduleReconnect(mode);
+  }
+
+  private clearSilence(): void {
+    if (this.silenceTimer !== null) {
+      clearTimeout(this.silenceTimer);
+      this.silenceTimer = null;
+    }
   }
 
   private scheduleReconnect(mode: ConnectionMode): void {
@@ -504,6 +552,7 @@ export class Bridge {
 
   private dropSocket(code = 1000, reason = "reconfigure"): void {
     const socket = this.socket;
+    this.clearSilence();
     this.socket = null;
     this.welcomed = false;
     this.pending.clear();
