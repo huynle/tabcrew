@@ -183,12 +183,17 @@ describe("authorization code flow", () => {
       return { html: await res.text(), csp: res.headers.get("content-security-policy") ?? "" };
     }
 
+    const formAction = (p: { csp: string }) => /form-action ([^;]+)/.exec(p.csp)![1]!.split(" ");
+
     it("buttons are POST forms: no link carries the one-time txn", async () => {
       const { html, csp } = await page();
       expect(html).not.toMatch(/href="[^"]*txn=/);
       expect(providerForm(html, "github").txn).toMatch(/.{20,}/);
       expect(providerForm(html, "google").txn).toMatch(/.{20,}/);
-      expect(csp).toContain("form-action 'self'");
+      // Chrome checks form-action on every redirect of the submission: the providers' origins must be allowed.
+      const formAction = /form-action ([^;]+)/.exec(csp)![1]!.split(" ");
+      expect(formAction).toContain("'self'");
+      expect(formAction).toContain(new URL(t.fake.url).origin);
     });
 
     it("a prefetch or a plain GET does not use up the txn", async () => {
@@ -198,7 +203,10 @@ describe("authorization code flow", () => {
       expect(prefetch.status).toBe(204);
       const get = await fetch(`${t.url}/auth/github?txn=${txn}`, { redirect: "manual" });
       expect(get.status).toBe(405);
-      expect((await submitProvider(t.url, html, "github")).status).toBe(302);
+      const ok = await submitProvider(t.url, html, "github");
+      expect(ok.status).toBe(302);
+      // The redirect target is an allowed form-action origin.
+      expect(formAction(await page())).toContain(new URL(ok.headers.get("location")!).origin);
       // ...and it is still single use.
       expect((await submitProvider(t.url, html, "github")).status).toBe(400);
     });

@@ -470,6 +470,8 @@ export class AuthServer {
       .join("\n");
     sendHtml(res, 200, page("Sign in to TabCrew", `<p>${what}</p>\n${buttons}\n<p class="small">Only continue if you started this yourself.</p>`), {
       forms: true,
+      // The provider buttons POST here and are redirected to the provider's sign-in page.
+      formTargets: this.o.providers.map((p) => new URL(p.authorizeUrl({ state: "x", redirectUri: this.o.publicUrl })).origin),
       headers: { "referrer-policy": "same-origin" },
     });
   }
