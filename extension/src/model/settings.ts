@@ -21,7 +21,7 @@ export interface ProviderSettings {
   readonly fallback_text_model?: string;
 }
 
-export type PresetId = "provider-a" | "provider-b" | "openrouter" | "custom";
+export type PresetId = "openrouter" | "openai" | "anthropic" | "gemini" | "custom";
 
 /** Models suggested for a preset: marked "(recommended)" and preselected when listed and unset. */
 export interface ModelRecommendation {
@@ -38,16 +38,9 @@ export interface ProviderPreset {
   readonly recommended: ModelRecommendation | null;
 }
 
-/** Verified with json_object chat calls on Provider (2026-10-22). */
-const PROVIDER_FIXTURE_MODELS: ModelRecommendation = {
-  decision_model: "gemini-3.6-flash",
-  text_model: "gemini-3.1-flash-lite",
-  fallback_text_model: "gpt-6-luna",
-};
-
+/** Public providers with an OpenAI-compatible chat-completions API. Self-hosted gateways
+ * (OmniRoute, LiteLLM, Ollama, ...) use Custom with their own base URL. */
 export const PROVIDER_PRESETS: readonly ProviderPreset[] = [
-  { id: "provider-a", label: "Provider A", base_url: "https://llm.example.com/v1", recommended: PROVIDER_FIXTURE_MODELS },
-  { id: "provider-b", label: "Provider B", base_url: "https://llm2.example.com/v1", recommended: PROVIDER_FIXTURE_MODELS },
   // The daemon's defaults (DEFAULT_JEV_MODEL / DEFAULT_TEXT_MODEL).
   {
     id: "openrouter",
@@ -55,7 +48,10 @@ export const PROVIDER_PRESETS: readonly ProviderPreset[] = [
     base_url: "https://openrouter.ai/api/v1",
     recommended: { decision_model: "typesafe/jev-1.13", text_model: "inception/mercury-2.5" },
   },
-  { id: "custom", label: "Custom", base_url: null, recommended: null },
+  { id: "openai", label: "OpenAI", base_url: "https://api.openai.com/v1", recommended: null },
+  { id: "anthropic", label: "Anthropic", base_url: "https://api.anthropic.com/v1", recommended: null },
+  { id: "gemini", label: "Google Gemini", base_url: "https://generativelanguage.googleapis.com/v1beta/openai", recommended: null },
+  { id: "custom", label: "Custom (OmniRoute, LiteLLM, Ollama, ...)", base_url: null, recommended: null },
 ];
 
 /** The preset whose base URL this is (trailing slashes ignored), else "custom". */

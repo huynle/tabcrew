@@ -20,34 +20,34 @@ import {
 const PROVIDER_FIXTURE: ProviderSettings = {
   kind: "openai-compatible",
   base_url: "https://llm.example.com/v1",
-  api_key: "sk-provider-secret-1234",
+  api_key: "sk-test-secret-1234",
   headers: { "OpenAI-Organization": "org-1" },
   decision_model: "gemini-3.6-flash",
   text_model: "gemini-3.1-flash-lite",
 };
 
 describe("presets", () => {
-  it("offers Provider A, Provider B, OpenRouter and Custom", () => {
+  it("offers OpenRouter, OpenAI, Anthropic, Google Gemini and Custom", () => {
     expect(PROVIDER_PRESETS.map((p) => [p.id, p.label, p.base_url])).toEqual([
-      ["provider-a", "Provider A", "https://llm.example.com/v1"],
-      ["provider-b", "Provider B", "https://llm2.example.com/v1"],
       ["openrouter", "OpenRouter", "https://openrouter.ai/api/v1"],
-      ["custom", "Custom", null],
+      ["openai", "OpenAI", "https://api.openai.com/v1"],
+      ["anthropic", "Anthropic", "https://api.anthropic.com/v1"],
+      ["gemini", "Google Gemini", "https://generativelanguage.googleapis.com/v1beta/openai"],
+      ["custom", "Custom (OmniRoute, LiteLLM, Ollama, ...)", null],
     ]);
   });
 
   it("maps a base URL back to its preset (trailing slash ignored), anything else is custom", () => {
-    expect(presetFor("https://llm.example.com/v1")).toBe("provider-a");
-    expect(presetFor("https://llm2.example.com/v1/")).toBe("provider-b");
+    expect(presetFor("https://api.openai.com/v1")).toBe("openai");
+    expect(presetFor("https://api.anthropic.com/v1/")).toBe("anthropic");
     expect(presetFor("https://openrouter.ai/api/v1")).toBe("openrouter");
     expect(presetFor("https://example.com/v1")).toBe("custom");
     expect(presetFor("")).toBe("custom");
   });
 
-  it("recommends verified models for the Provider presets, the daemon defaults for OpenRouter, none for custom", () => {
-    const provider = { decision_model: "gemini-3.6-flash", text_model: "gemini-3.1-flash-lite", fallback_text_model: "gpt-6-luna" };
-    expect(recommendedModels("https://llm.example.com/v1")).toEqual(provider);
-    expect(recommendedModels("https://llm2.example.com/v1/")).toEqual(provider);
+  it("recommends the daemon defaults for OpenRouter, none for the other presets or custom", () => {
+    expect(recommendedModels("https://api.openai.com/v1")).toBeNull();
+    expect(recommendedModels("https://api.anthropic.com/v1/")).toBeNull();
     expect(recommendedModels("https://openrouter.ai/api/v1")).toEqual({ decision_model: "typesafe/jev-1.13", text_model: "inception/mercury-2.5" });
     expect(recommendedModels("https://llm.example/v1")).toBeNull();
   });
@@ -144,7 +144,7 @@ describe("modelFor", () => {
 
 describe("keyHint", () => {
   it("shows only the last 4 characters", () => {
-    expect(keyHint("sk-provider-secret-1234")).toBe("1234");
+    expect(keyHint("sk-test-secret-1234")).toBe("1234");
     expect(keyHint("abc")).toBe("");
   });
 });

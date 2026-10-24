@@ -5,7 +5,7 @@ import { stubFetch } from "../test/fakes.js";
 import { MAX_TOKENS_CAP, createModelProxy, redactSecrets, type ModelProxyDeps } from "./proxy.js";
 import type { ProviderSettings } from "./settings.js";
 
-const KEY = "sk-provider-very-secret-key-9876";
+const KEY = "sk-test-very-secret-key-9876";
 const SETTINGS: ProviderSettings = {
   kind: "openai-compatible",
   base_url: "https://llm.example.com/v1",
@@ -165,10 +165,10 @@ describe("model_call proxy: replies", () => {
     expect(await c.proxy(CALL)).toEqual({ ok: true, result: { status: 429, json: null, model: "gemini-3.6-flash" } });
   });
 
-  it("passes Provider' usage.cost object through untouched", async () => {
-    const provider = { ...REPLY, usage: { prompt_tokens: 5, completion_tokens: 3, cost: { input_cost: 0.0001, output_cost: 0.0002, total_cost: 0.0003 } } };
-    const { proxy } = setup({ reply: () => provider });
-    expect(await proxy(CALL)).toEqual({ ok: true, result: { status: 200, json: provider, model: "gemini-3.6-flash" } });
+  it("passes an object-shaped usage.cost through untouched", async () => {
+    const objectCost = { ...REPLY, usage: { prompt_tokens: 5, completion_tokens: 3, cost: { input_cost: 0.0001, output_cost: 0.0002, total_cost: 0.0003 } } };
+    const { proxy } = setup({ reply: () => objectCost });
+    expect(await proxy(CALL)).toEqual({ ok: true, result: { status: 200, json: objectCost, model: "gemini-3.6-flash" } });
   });
 
   it("aborts at timeout_ms with model_error", async () => {

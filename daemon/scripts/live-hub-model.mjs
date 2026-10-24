@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-// PAID (cents) live check of hub mode with a Provider (or any OpenAI-compatible) model provider:
+// PAID (cents) live check of hub mode with an OpenAI-compatible model provider:
 // one `browse` on Wikipedia over the `tabcrew mcp` shim, exactly the path OpenCode uses.
 // The model calls go from the extension to the provider set in its popup; nothing is read from ~/.tabcrew.
-// Usage: node daemon/scripts/live-provider.mjs [--keep-open] [--max-steps N]
+// Usage: node daemon/scripts/live-hub-model.mjs [--keep-open] [--max-steps N]
 // Exit codes: 0 browse reached DONE on the expected article, 1 any failure, 2 usage.
 import { connect, describeTransport } from "./connect.mjs";
 
@@ -22,13 +22,13 @@ const BROWSE_TIMEOUT_MS = 10 * 60_000;
 console.log(`Prerequisites:
   - the TabCrew extension is loaded (chrome://extensions -> Load unpacked -> extension/dist) and its
     popup shows "connected" (Advanced -> Connection: Auto or Hub; click "Trust this hub" if asked)
-  - popup Advanced -> Model provider: Provider A or Provider B, your API key, a decision model and
+  - popup Advanced -> Model provider: a preset or Custom, your API key, a decision model and
     a text model, then Save (and Allow the site access Chrome asks for)
   - OpenCode is NOT required: this script runs its own \`tabcrew mcp\` shim (npm run build first)
 PAID: one browse, a few cents on the configured provider.
 `);
 console.log(describeTransport("shim"));
-const client = await connect("tabcrew-live-provider", "shim");
+const client = await connect("tabcrew-live-hub-model", "shim");
 
 async function call(name, args) {
   const r = await client.callTool({ name, arguments: args }, undefined, { timeout: name === "browse" ? BROWSE_TIMEOUT_MS : 60_000 });
@@ -52,7 +52,7 @@ function hint(code) {
   return "";
 }
 
-const opened = await call("session_open", { label: "live-provider" });
+const opened = await call("session_open", { label: "live-hub-model" });
 const session = opened.json?.session;
 try {
   if (!check("session_open", Boolean(session), opened.error?.code)) throw new Error("no session");

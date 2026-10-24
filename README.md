@@ -90,11 +90,11 @@ OpenCode ──stdio──▶ tabcrew mcp ──Unix socket──▶ TabCrew hub
 4. **Start OpenCode.** Until a hub is running, the popup shows **hub not running** with the hint "Start OpenCode — TabCrew starts with it." Once the hub runs, the extension connects within a few seconds and the badge turns **connected**. The first connection pairs automatically (trust on first use; see below).
 
 5. **Set a model provider for `browse`.** In the popup, open **Advanced → Model provider**:
-   - **Provider**: Provider A (`https://llm.example.com/v1`), Provider B (`https://llm2.example.com/v1`), OpenRouter (`https://openrouter.ai/api/v1`), or Custom. Custom takes any OpenAI-compatible base URL: `https://`, or `http://` only for `localhost`/`127.0.0.1`.
+   - **Provider**: OpenRouter (`https://openrouter.ai/api/v1`), OpenAI (`https://api.openai.com/v1`), Anthropic (`https://api.anthropic.com/v1`, its OpenAI-compatible endpoint), Google Gemini (`https://generativelanguage.googleapis.com/v1beta/openai`), or Custom. Custom takes any OpenAI-compatible base URL, for example a self-hosted gateway such as OmniRoute or LiteLLM: `https://`, or `http://` only for `localhost`/`127.0.0.1`.
    - **API key**: write-only. After saving, the popup only shows `Set …abcd`. A saved key is kept only while the base URL stays on the same origin.
    - **Headers** (optional): extra request headers, for example `OpenAI-Organization`. Up to 20; `Authorization`, `Host`, `Cookie`, `Content-Length`, `Content-Type` and `Origin` are not allowed.
    - **Load models**: lists the provider's models (`GET {base}/models`; only the base URL and key are needed). The first time, Chrome asks to allow access to the provider's site: allow it. Once access is granted, the popup loads the list by itself whenever it opens.
-   - **Decision model** (picks every `browse` step; use a fast model that reliably returns JSON), **Text model** (fills `TYPE_TEXT` values; a small, cheap model is fine) and an optional **Fallback text model** (tried once if the text model fails, or **None**). Pick them from the dropdowns, which list the provider's chat models (embedding, speech, rerank and moderation models are left out), or choose **Custom…** and type a model id. Recommended models are marked "(recommended)" and preselected while nothing is chosen yet: for Provider `gemini-3.6-flash` (decision), `gemini-3.1-flash-lite` (text) and `gpt-6-luna` (fallback); for OpenRouter the daemon's defaults `typesafe/jev-1.13` and `inception/mercury-2.5` (no fallback). A saved model that the provider doesn't list (or before the list is loaded) is shown as "(saved)".
+   - **Decision model** (picks every `browse` step; use a fast model that reliably returns JSON), **Text model** (fills `TYPE_TEXT` values; a small, cheap model is fine) and an optional **Fallback text model** (tried once if the text model fails, or **None**). Pick them from the dropdowns, which list the provider's chat models (embedding, speech, rerank and moderation models are left out), or choose **Custom…** and type a model id. Recommended models are marked "(recommended)" and preselected while nothing is chosen yet: for OpenRouter the daemon's defaults `typesafe/jev-1.13` and `inception/mercury-2.5` (no fallback). A saved model that the provider doesn't list (or before the list is loaded) is shown as "(saved)".
    - **Test**: lists the models (and fills the dropdowns) and sends a tiny JSON chat request with the decision model.
    - **Save**: stores the settings in the extension. Chrome asks to allow access to the provider's site if you haven't yet. Allow it, or `browse` can't reach the provider. **Remove** deletes the settings and the key.
    - **Unsaved changes are kept.** Chrome closes the popup when it shows its permission prompt, so whatever you typed (the key included) is kept as a draft in the extension's `chrome.storage.session` (in memory, never synced) and put back when you reopen the popup ("Unsaved changes restored."). The draft is deleted on **Save** or **Remove**, and when the browser restarts (or the extension is reloaded).
@@ -103,7 +103,7 @@ OpenCode ──stdio──▶ tabcrew mcp ──Unix socket──▶ TabCrew hub
 
 6. **Choose the connection, if needed.** **Advanced → Connection** has three modes. **Auto** (the default) uses hub mode unless this browser profile has a daemon token saved from an earlier `npx tabcrew setup`. **Hub** and **Daemon** force a mode. In hub mode the port field is labeled **Hub port** (default 8775).
 
-The live checks for hub mode are `just hub-smoke`, `hub-isolation`, `hub-concurrency` and `live-provider` (see [Testing](#testing)).
+The live checks for hub mode are `just hub-smoke`, `hub-isolation`, `hub-concurrency` and `live-hub-model` (see [Testing](#testing)).
 
 ### Trust on first use
 
@@ -421,7 +421,7 @@ Unit tests never open a browser, call a paid API, or touch your real home direct
 | `just hub-smoke` | `smoke` through the hub-mode shim | free |
 | `just hub-isolation` | `isolation` with one shim per agent; a session ends when its shim exits | free |
 | `just hub-concurrency` | `concurrency` with one shim per agent | free |
-| `just live-provider` | one `browse` on Wikipedia through the shim, using the popup's model provider (e.g. Provider). Prints status, steps, decision model, text calls and cost | **paid** (cents) |
+| `just live-hub-model` | one `browse` on Wikipedia through the shim, using the popup's model provider (any OpenAI-compatible provider). Prints status, steps, decision model, text calls and cost | **paid** (cents) |
 
 Measured on the development machine: the 3-agent isolation run went from 20.6 s to 1.95 s after moving the socket into the offscreen document; live `browse` takes about 3.6–10 s on Wikipedia and 10–20 s on Google Flights. With the shared TabCrew window, three sessions created their first tabs in parallel in 1.8 s (including opening the window), and a fourth session joined in 91 ms, against 2.8–3.0 s per session with a new window each.
 

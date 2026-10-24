@@ -5,7 +5,7 @@ import { CUSTOM_MODEL, chatModelIds, modelPicker, modelsStatus, pickedModel, pro
 const SAVED: ProviderSettings = {
   kind: "openai-compatible",
   base_url: "https://llm.example.com/v1",
-  api_key: "sk-provider-secret-1234",
+  api_key: "sk-test-secret-1234",
   headers: {},
   decision_model: "gemini-3.6-flash",
   text_model: "gemini-3.1-flash-lite",

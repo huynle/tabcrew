@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { stubFetch } from "../test/fakes.js";
 import { checkChat, listModels, probeProvider, type ProbeInput } from "./probe.js";
 
-const KEY = "sk-provider-very-secret-key-9876";
+const KEY = "sk-test-very-secret-key-9876";
 const INPUT: ProbeInput = {
   base_url: "https://llm.example.com/v1",
   api_key: KEY,

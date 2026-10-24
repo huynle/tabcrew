@@ -229,7 +229,7 @@ export async function postJson(url: string, key: string, body: unknown, settings
   return (await sendModel(httpTransport, { url, key, body: body as Record<string, unknown> }, settings)).json;
 }
 
-/** `usage.cost` as a number: OpenRouter sends a number, Provider `{input_cost, output_cost, total_cost}`. */
+/** `usage.cost` as a number: OpenRouter sends a number, some gateways `{input_cost, output_cost, total_cost}`. */
 export function parseCost(usage: unknown): number {
   const cost = (usage as { cost?: unknown } | null | undefined)?.cost;
   const value = cost && typeof cost === "object" ? (cost as { total_cost?: unknown }).total_cost : cost;

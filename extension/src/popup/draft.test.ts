@@ -7,15 +7,15 @@ import { providerFormFrom, type ProviderForm } from "./view.js";
 const SAVED: ProviderSettings = {
   kind: "openai-compatible",
   base_url: "https://llm.example.com/v1",
-  api_key: "sk-provider-secret-1234",
+  api_key: "sk-test-secret-1234",
   headers: { "OpenAI-Organization": "org-1" },
   decision_model: "gemini-3.6-flash",
   text_model: "gemini-3.1-flash-lite",
 };
 
 const DRAFT: ProviderForm = {
-  preset: "provider-b",
-  base_url: "https://llm2.example.com/v1",
+  preset: "anthropic",
+  base_url: "https://api.anthropic.com/v1",
   api_key: "sk-typed-5678",
   headers: [{ name: "X-Team", value: "crew" }],
   decision_model: "gpt-6-luna",
@@ -62,7 +62,7 @@ describe("draftDiffers", () => {
 
   it("re-typing the saved key is not a change; any other key is", () => {
     const form = providerFormFrom(SAVED);
-    expect(draftDiffers({ ...form, api_key: "sk-provider-secret-1234" }, SAVED)).toBe(false);
+    expect(draftDiffers({ ...form, api_key: "sk-test-secret-1234" }, SAVED)).toBe(false);
     expect(draftDiffers({ ...form, api_key: "sk-other" }, SAVED)).toBe(true);
     expect(draftDiffers({ ...providerFormFrom(null), api_key: "sk-typed" }, null)).toBe(true);
   });
@@ -70,8 +70,8 @@ describe("draftDiffers", () => {
   it("any changed field is a change", () => {
     const form = providerFormFrom(SAVED);
     const changes: Partial<ProviderForm>[] = [
-      { preset: "custom" },
-      { base_url: "https://llm2.example.com/v1" },
+      { preset: "openai" },
+      { base_url: "https://api.anthropic.com/v1" },
       { headers: [] },
       { headers: [{ name: "OpenAI-Organization", value: "org-2" }] },
       { decision_model: "gpt-6-luna" },

@@ -37,8 +37,8 @@ afterEach(async () => {
   vi.unstubAllGlobals();
 });
 
-/** A Provider chat completion: usage.cost is an object, the model comes back in the reply. */
-function provider(content: unknown, model: string) {
+/** A chat completion whose usage.cost is an object, the model comes back in the reply. */
+function completion(content: unknown, model: string) {
   return {
     status: 200,
     model,
@@ -82,7 +82,7 @@ async function browse(client: Client, args: Record<string, unknown>) {
 }
 
 describe("hub-mode browse via model_call", () => {
-  it("decides by chat and fills text through the extension; reports model and Provider cost", async () => {
+  it("decides by chat and fills text through the extension; reports model and object-shaped cost", async () => {
     const { ext, client, session, tab } = await setup();
     const moves = [
       { operation: "TYPE_TEXT", target: "1", confidence: 0.8, reason: "fill origin" },
@@ -90,7 +90,7 @@ describe("hub-mode browse via model_call", () => {
     ];
     let decisions = 0;
     ext.modelHandler = (c: V2ModelCall) =>
-      c.purpose === "chat_decision" ? provider("```json\n" + JSON.stringify(moves[decisions++]) + "\n```", "gemini-3.6-flash") : provider({ text: "Zurich" }, "claude-haiku-4-5");
+      c.purpose === "chat_decision" ? completion("```json\n" + JSON.stringify(moves[decisions++]) + "\n```", "gemini-3.6-flash") : completion({ text: "Zurich" }, "claude-haiku-4-5");
 
     const r = await browse(client, { session, tab_id: tab, goal: "Fly from Zurich" });
     expect(r.status).toBe("done");

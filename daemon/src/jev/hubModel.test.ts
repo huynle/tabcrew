@@ -47,7 +47,7 @@ const BODY = { messages: [{ role: "user", content: "hi" }], max_tokens: 10, resp
 const OPTS: Pick<ModelSettings, "retryBaseMs" | "timeoutMs"> = { retryBaseMs: 1, timeoutMs: 1234 };
 
 describe("parseCost", () => {
-  it("reads OpenRouter's number and Provider' {total_cost} object", () => {
+  it("reads OpenRouter's number and an object-shaped {total_cost}", () => {
     expect(parseCost({ cost: 0.0005 })).toBe(0.0005);
     expect(parseCost({ cost: { input_cost: 0.0001, output_cost: 0.0002, total_cost: 0.0003 } })).toBe(0.0003);
   });
@@ -145,8 +145,8 @@ describe("sendModel over model_call", () => {
 // Hub mode decisions (chat only, via model_call)
 // ---------------------------------------------------------------------------
 
-/** A Provider-shaped chat completion: usage.cost is an object. */
-function providerCompletion(content: string, model = "gemini-3.6-flash"): ModelCallResult {
+/** A chat completion: usage.cost is an object. */
+function objectCostCompletion(content: string, model = "gemini-3.6-flash"): ModelCallResult {
   return {
     status: 200,
     model,
@@ -178,15 +178,15 @@ describe("hub-mode chat decisions", () => {
   const space = actionSpace(snap.actions);
 
   it("needs no key, whatever decision provider the config names", () => {
-    const { bridge } = fakeBridge(() => providerCompletion("{}"));
+    const { bridge } = fakeBridge(() => objectCostCompletion("{}"));
     for (const decisionProvider of ["jev", "chat", "auto"] as const) {
       expect(missingDecisionKey(hubSettings(bridge, { decisionProvider }))).toBe(false);
     }
   });
 
-  it("always decides by chat over model_call: purpose chat_decision, no model/reasoning, model and Provider cost from the reply", async () => {
+  it("always decides by chat over model_call: purpose chat_decision, no model/reasoning, model and object-shaped cost from the reply", async () => {
     const { bridge, calls } = fakeBridge(() =>
-      providerCompletion('```json\n{"operation": "CLICK", "target": "1", "confidence": 0.7, "reason": "open picker"}\n```'),
+      objectCostCompletion('```json\n{"operation": "CLICK", "target": "1", "confidence": 0.7, "reason": "open picker"}\n```'),
     );
     const decide = decider(hubSettings(bridge, { decisionProvider: "jev", decisionModel: "placeholder" }));
     const d = await decide(snap, space, "Open the origin picker", []);
@@ -230,8 +230,8 @@ describe("hub-mode text helper", () => {
   const timedOut = () => new ModelCallUnavailableError("timeout", "Model request timed out; no action executed.");
   const notConfigured = () => new DaemonError("model_not_configured", "set a model provider in the TabCrew popup");
 
-  it("asks purpose text with only messages/max_tokens/response_format, 8 s per attempt; model and Provider cost from the reply", async () => {
-    const { bridge, calls } = fakeBridge(() => providerCompletion('```json\n{"text": "Zurich"}\n```', "claude-haiku-4-5"));
+  it("asks purpose text with only messages/max_tokens/response_format, 8 s per attempt; model and object-shaped cost from the reply", async () => {
+    const { bridge, calls } = fakeBridge(() => objectCostCompletion('```json\n{"text": "Zurich"}\n```', "claude-haiku-4-5"));
     const r = await fieldText(context(), hubSettings(bridge));
     expect(r).toMatchObject({ text: "Zurich", model: "claude-haiku-4-5", cost: 0.0003 });
     expect(calls).toHaveLength(1);
@@ -242,7 +242,7 @@ describe("hub-mode text helper", () => {
   });
 
   it("uses an explicit text timeout", async () => {
-    const { bridge, calls } = fakeBridge(() => providerCompletion('{"text": "a"}'));
+    const { bridge, calls } = fakeBridge(() => objectCostCompletion('{"text": "a"}'));
     await fieldText(context(), hubSettings(bridge, { textModelTimeoutMs: 1500 }));
     expect(calls[0].timeoutMs).toBe(1500);
   });
@@ -250,7 +250,7 @@ describe("hub-mode text helper", () => {
   it("falls back to text_fallback once when text fails", async () => {
     const { bridge, calls } = fakeBridge((purpose) => {
       if (purpose === "text") throw timedOut();
-      return providerCompletion('{"text": "London"}', "gemini-3.1-flash-lite");
+      return objectCostCompletion('{"text": "London"}', "gemini-3.1-flash-lite");
     });
     expect(await fieldText(context(), hubSettings(bridge))).toMatchObject({ text: "London", model: "gemini-3.1-flash-lite" });
     expect(calls.map((c) => c.purpose)).toEqual(["text", "text_fallback"]);

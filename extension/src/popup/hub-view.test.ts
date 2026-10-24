@@ -43,7 +43,7 @@ const daemonState = (status: PopupState["status"], extra: Partial<PopupState> = 
 const SAVED: ProviderSettings = {
   kind: "openai-compatible",
   base_url: "https://llm.example.com/v1",
-  api_key: "sk-provider-secret-1234",
+  api_key: "sk-test-secret-1234",
   headers: { "OpenAI-Organization": "org-1" },
   decision_model: "gemini-3.6-flash",
   text_model: "gemini-3.1-flash-lite",
@@ -153,10 +153,10 @@ describe("portField / portSetting", () => {
 });
 
 describe("providerFormFrom", () => {
-  it("defaults to the Provider A preset with no key", () => {
+  it("defaults to the OpenRouter preset with no key", () => {
     expect(providerFormFrom(null)).toEqual({
-      preset: "provider-a",
-      base_url: "https://llm.example.com/v1",
+      preset: "openrouter",
+      base_url: "https://openrouter.ai/api/v1",
       api_key: "",
       headers: [],
       decision_model: "",

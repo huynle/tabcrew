@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createFakeChrome, flush, stubFetch, type FakeChrome } from "../test/fakes.js";
 import { PROVIDER_KEY } from "./settings.js";
 
-const KEY = "sk-provider-very-secret-key-9876";
+const KEY = "sk-test-very-secret-key-9876";
 const CALL = {
   type: "model_call",
   id: "m1",
