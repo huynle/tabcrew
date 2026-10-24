@@ -197,6 +197,10 @@ export async function startRelay(o: RelayOptions): Promise<RunningRelay> {
       }
       const transport: StreamableHTTPServerTransport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),
+        // Plain JSON replies (with Content-Length) instead of a per-request event stream: through
+        // Traefik ~0.5% of streamed replies were cut off after their headers (client waited 60 s),
+        // never reproduced without it. Tools send no progress, so nothing is lost.
+        enableJsonResponse: true,
         onsessioninitialized: (id) => {
           mcpSessions.set(id, { transport, userId: claims.sub, clientId: claims.cid });
         },

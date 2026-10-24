@@ -85,3 +85,18 @@ describe("keep-alive behind a reverse proxy", () => {
     expect(t.relay.headersTimeoutMs).toBeGreaterThan(t.relay.keepAliveTimeoutMs);
   });
 });
+
+describe("MCP replies are plain JSON", () => {
+  it("answers a POST with application/json and a Content-Length, not an event stream", async () => {
+    const { access_token } = await setup();
+    const headers: Record<string, string> = { authorization: `Bearer ${access_token}`, "content-type": "application/json", accept: "application/json, text/event-stream" };
+    const init = await fetch(`${t.url}/mcp`, { method: "POST", headers, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "raw", version: "0" } } }) });
+    expect(init.headers.get("content-type")).toContain("application/json");
+    headers["mcp-session-id"] = init.headers.get("mcp-session-id")!;
+    expect((await init.json()).result.serverInfo.name).toBe("tabcrew");
+    const res = await fetch(`${t.url}/mcp`, { method: "POST", headers, body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "browser_list", arguments: {} } }) });
+    expect(res.headers.get("content-type")).toContain("application/json");
+    expect(Number(res.headers.get("content-length"))).toBeGreaterThan(0);
+    expect((await res.json()).result.content[0].text).toContain("home-mac");
+  });
+});
