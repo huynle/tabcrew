@@ -1,6 +1,6 @@
 {
   "name": "@tabcrew/daemon",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "private": true,
   "description": "TabCrew daemon: HTTP MCP endpoint, sessions, per-tab scheduling, Jev loop, setup CLI",
   "license": "MIT",
