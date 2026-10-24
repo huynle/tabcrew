@@ -255,10 +255,17 @@ try {
     expectError(await act(obs, "CLICK", el(obs, "Continue").index), "target_invalid", "ancestor disabled");
     expectText(await observe(), "Continue clicks: 0", "nothing clicked");
   });
-  await guard("target pushed out of the viewport is rejected (target_invalid)", async () => {
+  await guard("target pushed out of the viewport is scrolled back into view and clicked", async () => {
     const obs = await armed("push offscreen");
-    expectError(await act(obs, "CLICK", el(obs, "Continue").index), "target_invalid", "offscreen target");
-    expectText(await observe(), "Continue clicks: 0", "nothing clicked");
+    try {
+      expectOk(await act(obs, "CLICK", el(obs, "Continue").index), "offscreen target");
+      // observe only sees the viewport, now scrolled to the moved target; read_text sees the counter.
+      const text = await call("read_text", { session, tab_id: tabId });
+      if (!String(text.json?.text ?? "").includes("Continue clicks: 1")) throw new Error(`clicked once: page text lacks "Continue clicks: 1"`);
+    } finally {
+      // Start the next checks from the top of a fresh page (a new URL, so Chrome restores no scroll).
+      expectOk(await call("navigate", { session, tab_id: tabId, url: `${base}/guards.html?fresh=offscreen` }), "reload fixture");
+    }
   });
 
   // Action-specific guard on "Buy" (inside the form) vs. the full marker for typing.
