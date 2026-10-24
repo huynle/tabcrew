@@ -4,9 +4,11 @@ name: Relay release
 # organization's reviewed release workflow, after the relay's tests and an image smoke test pass.
 # Production promotion is manual: a reviewed huynle/infra PR pins the exact tag and digest
 # (apps/homelab/tabcrew-relay). This repository is public, so builds run on GitHub-hosted runners only.
+# Release branches (relay-release/**) build a relay image from a commit that is not on main yet, e.g. to
+# deploy and test a feature branch before merging (workflow_dispatch only works once the workflow is on main).
 on:
   push:
-    branches: [main]
+    branches: [main, "relay-release/**"]
     paths:
       - relay/**
       - daemon/**
