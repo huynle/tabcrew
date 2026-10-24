@@ -205,6 +205,8 @@ export class AuthServer {
       return false;
     } catch (err) {
       if (err instanceof OAuthError) {
+        // Fixed messages only (never codes, tokens or query strings).
+        log.warn(`auth: ${req.method} ${url.pathname} -> ${err.status} ${err.code}: ${err.message}`);
         if (url.pathname === "/token" || url.pathname === "/register") sendJson(res, err.status, { error: err.code, error_description: err.message });
         else this.errorPage(res, err.status, err.message);
         return true;
@@ -293,6 +295,7 @@ export class AuthServer {
     };
     const id = randomToken();
     await this.o.store.putTxn(id, txn, this.now() + TXN_TTL_MS);
+    log.info(`auth: sign-in page for a ${client.kind === "ext" ? "browser" : "MCP client"}`);
     this.signInPage(res, client, redirectUri, id, txn);
   }
 
@@ -304,6 +307,7 @@ export class AuthServer {
     // A fresh id for the provider leg, so the link on the sign-in page cannot be replayed.
     const state = randomToken();
     await this.o.store.putTxn(state, { ...(taken.data as AuthTxn), provider: provider.id }, this.now() + TXN_TTL_MS);
+    log.info(`auth: to ${provider.label} for a ${(taken.data as AuthTxn).audience === "ext" ? "browser" : "MCP client"}`);
     res.writeHead(302, { location: provider.authorizeUrl({ state, redirectUri: this.callbackUrl(provider.id) }), "cache-control": "no-store" });
     res.end();
   }
@@ -324,6 +328,7 @@ export class AuthServer {
     if (txn.state !== null) back.searchParams.set("state", txn.state);
     const code = url.searchParams.get("code");
     if (!code) {
+      log.info(`auth: ${provider.label} returned no code (${(url.searchParams.get("error") ?? "none").slice(0, 40)})`);
       // The person declined at the provider: tell the client (its redirect was validated in /authorize).
       back.searchParams.set("error", "access_denied");
       res.writeHead(302, { location: back.toString(), "cache-control": "no-store" }).end();
@@ -332,7 +337,8 @@ export class AuthServer {
     let identity;
     try {
       identity = await provider.exchange({ code, redirectUri: this.callbackUrl(provider.id) });
-    } catch {
+    } catch (err) {
+      log.warn(`auth: ${provider.label} code exchange failed: ${String((err as Error)?.message ?? err).slice(0, 120)}`);
       throw new OAuthError("server_error", `${provider.label} sign-in failed. Try again.`, 502);
     }
     const user = await this.o.store.upsertIdentity({ provider: provider.id, ...identity });
@@ -373,6 +379,7 @@ export class AuthServer {
       browserId,
     };
     await this.o.store.putCode(sha256(authCode), data, this.now() + CODE_TTL_MS);
+    log.info(`auth: ${provider.label} sign-in ok, code issued to a ${data.audience === "ext" ? "browser" : "MCP client"} (returns to ${back.host})`);
     back.searchParams.set("code", authCode);
     res.writeHead(302, { location: back.toString(), "cache-control": "no-store" }).end();
   }
@@ -399,6 +406,7 @@ export class AuthServer {
         throw new OAuthError("invalid_grant", "invalid, expired or already used authorization code");
       }
       sendJson(res, 200, await this.issue(data.userId, clientId, data.audience, data.browserId, newId("f")));
+      log.info(`auth: tokens issued (authorization_code, ${data.audience})`);
       return;
     }
     if (form.grant_type === "refresh_token") {
