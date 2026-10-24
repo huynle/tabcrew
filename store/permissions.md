@@ -3,7 +3,7 @@
 Paste into the Developer Dashboard **Privacy** tab. Verified against the built store manifest (`extension/dist-store/manifest.json`, printed by `npm run build:store`):
 
 ```
-permissions:               ["debugger", "tabs", "tabGroups", "storage", "alarms", "offscreen", "nativeMessaging"]
+permissions:               ["debugger", "tabs", "tabGroups", "storage", "alarms", "offscreen", "identity", "nativeMessaging"]
 host_permissions:          none
 optional_host_permissions: ["https://*/*", "http://localhost/*", "http://127.0.0.1/*"]
 ```
@@ -13,7 +13,7 @@ No install-time host permissions. The `debugger` API attaches to agent tabs with
 ## Single purpose description
 
 ```
-TabCrew lets AI agents that the user runs on their own computer operate the user's browser in isolated, agent-owned tabs. It receives commands only from the TabCrew daemon or hub on the same computer (127.0.0.1). It opens agent tabs in TabCrew's own window and tab groups, keeps track of which tabs belong to which agent session, reads those tabs, performs clicks, typing and navigation in them, and hands finished tabs back to the user. In hub mode, it also sends the model requests for the agent's "browse" tool to the one AI model provider the user configured in the popup. Everything the extension does serves this one purpose.
+TabCrew lets AI agents that the user runs on their own computer operate the user's browser in isolated, agent-owned tabs. It receives commands only from the TabCrew daemon or hub on the same computer (127.0.0.1), or, in the optional Online mode that the user turns on and signs in to, from the user's own account on the TabCrew relay (https://tabcrew.huynle.com), which carries commands from the user's own agents on other computers. It opens agent tabs in TabCrew's own window and tab groups, keeps track of which tabs belong to which agent session, reads those tabs, performs clicks, typing and navigation in them, and hands finished tabs back to the user. In hub and Online mode, it also sends the model requests for the agent's "browse" tool to the one AI model provider the user configured in the popup. Everything the extension does serves this one purpose.
 ```
 
 ## Permission justifications
@@ -39,7 +39,7 @@ Agent tabs live in TabCrew's own named tab groups so the user can see at a glanc
 ### storage
 
 ```
-chrome.storage.local keeps the user's settings (where new agent tabs open, the default tab group name and group names created in the popup, what happens to an agent's tabs when it finishes, the connection mode, the local daemon or hub port) and the access token for the user's own local daemon, obtained by pairing. It also keeps which tab, group and window ids belong to which agent session, so that agents stay isolated from the user's tabs and from each other even when the extension reloads; these ids are wiped when the browser starts, because Chrome assigns new ids after a restart. In hub mode (used where native messaging is blocked), it also keeps the pairing secret shared with the local hub, and the model provider settings the user saves in the popup: base URL, API key, optional headers and model names. Those are used only to call that provider. In daemon mode, API keys typed into the popup are not stored by the extension: they are passed to the local daemon, which keeps them on disk. chrome.storage.session keeps rebuildable runtime state (session labels, finished tabs and groups listed in the popup) and, in hub mode, the user's unsaved changes to the model provider form, including a typed API key, because Chrome closes the popup while it shows the host permission prompt; that draft is deleted on Save or Remove and when the browser restarts. Nothing is synced or sent to any server.
+chrome.storage.local keeps the user's settings (where new agent tabs open, the default tab group name and group names created in the popup, what happens to an agent's tabs when it finishes, the connection mode, the local daemon or hub port) and the access token for the user's own local daemon, obtained by pairing. It also keeps which tab, group and window ids belong to which agent session, so that agents stay isolated from the user's tabs and from each other even when the extension reloads; these ids are wiped when the browser starts, because Chrome assigns new ids after a restart. In hub mode (used where native messaging is blocked), it also keeps the pairing secret shared with the local hub, and the model provider settings the user saves in the popup: base URL, API key, optional headers and model names. Those are used only to call that provider. In the optional Online mode, it keeps the relay address, the browser name the user chose and the relay sign-in token (a rotating refresh token, sent only to the relay). In daemon mode, API keys typed into the popup are not stored by the extension: they are passed to the local daemon, which keeps them on disk. chrome.storage.session keeps rebuildable runtime state (session labels, finished tabs and groups listed in the popup) and, in hub mode, the user's unsaved changes to the model provider form, including a typed API key, because Chrome closes the popup while it shows the host permission prompt; that draft is deleted on Save or Remove and when the browser restarts. Nothing is synced, and nothing in storage is sent to any server except the relay sign-in token to the relay.
 ```
 
 ### Optional host permissions (https://*/*, http://localhost/*, http://127.0.0.1/*)
@@ -57,7 +57,13 @@ A one-minute alarm keeps the connection to the local TabCrew daemon alive and re
 ### offscreen
 
 ```
-An offscreen document (reason: WORKERS) holds the long-lived WebSocket connection to the TabCrew daemon on 127.0.0.1, because a Manifest V3 service worker cannot keep a socket open reliably. It relays commands to the service worker and has no user-visible UI.
+An offscreen document (reason: WORKERS) holds the long-lived WebSocket connection to the TabCrew daemon or hub on 127.0.0.1 (or, in Online mode, to the user's TabCrew relay over wss), because a Manifest V3 service worker cannot keep a socket open reliably. It relays commands to the service worker and has no user-visible UI.
+```
+
+### identity
+
+```
+Used only in the optional Online mode, when the user clicks "Sign in" in the popup: chrome.identity.launchWebAuthFlow opens the TabCrew relay's sign-in page (https://tabcrew.huynle.com/authorize, OAuth 2.0 authorization code with PKCE), where the user signs in with GitHub or Google, and returns the authorization code to the extension (chrome.identity.getRedirectURL). The extension never sees the user's GitHub or Google password and does not use chrome.identity.getAuthToken or the user's Chrome profile account.
 ```
 
 ### nativeMessaging
@@ -73,24 +79,24 @@ Used only for automatic pairing with a daemon installed by "npx tabcrew setup" (
 Justification, if a reviewer asks:
 
 ```
-All JavaScript is bundled in the package (service-worker.js, popup/popup.js, offscreen/offscreen.js). There is no eval, new Function, remote <script> or remote import. In hub mode the replies of the user's model provider are parsed as JSON data, never executed. The page-inspection scripts evaluated in agent tabs through chrome.debugger (Runtime.evaluate) are fixed string constants shipped inside service-worker.js (extension/src/snapshot/scripts.ts and extension/src/navigate.ts in the open-source repository); only JSON-encoded numbers and strings (element IDs, option values, a length limit) are interpolated into them. Messages from the local daemon are JSON commands chosen from a fixed list of operations (for example "act" with CLICK and an element number), never code.
+All JavaScript is bundled in the package (service-worker.js, popup/popup.js, offscreen/offscreen.js). There is no eval, new Function, remote <script> or remote import. In hub and Online mode the replies of the user's model provider are parsed as JSON data, never executed. The page-inspection scripts evaluated in agent tabs through chrome.debugger (Runtime.evaluate) are fixed string constants shipped inside service-worker.js (extension/src/snapshot/scripts.ts and extension/src/navigate.ts in the open-source repository); only JSON-encoded numbers and strings (element IDs, option values, a length limit) are interpolated into them. Messages from the local daemon, hub or (Online mode) relay are JSON commands chosen from a fixed list of operations (for example "act" with CLICK and an element number), never code.
 ```
 
 ## Data usage
 
-The dashboard asks which categories of user data the item **collects** (handles off the device or for its functionality). The extension sends page data to the TabCrew daemon or hub on the same computer, and the developer receives nothing. When an agent uses `browse`, page content goes to the AI provider the user configured: in daemon mode the daemon (separate software the user installs) forwards it, and in hub mode the extension sends it directly with the user's own key. Disclose conservatively:
+The dashboard asks which categories of user data the item **collects** (handles off the device or for its functionality). The extension sends page data to the TabCrew daemon or hub on the same computer, and in those modes the developer receives nothing. In the optional Online mode, page data of agent tabs passes through the TabCrew relay run by the developer to the user's own agents, without being stored, and the relay stores the user's account (provider ID, email, name). When an agent uses `browse`, page content goes to the AI provider the user configured: in daemon mode the daemon (separate software the user installs) forwards it, and in hub mode the extension sends it directly with the user's own key. Disclose conservatively:
 
 | Category | Check? | Why |
 | --- | --- | --- |
-| Personally identifiable information | No | Not requested or stored. Pages an agent visits might display such data; it is handled as website content below. |
+| Personally identifiable information | **Yes** | Online mode only: signing in with GitHub or Google gives the TabCrew relay the user's provider user ID, verified email address and display name, which the relay stores as the user's account. The extension itself stores only the browser name the user chose. Pages an agent visits might display other such data; it is handled as website content below. |
 | Health information | No | |
 | Financial and payment information | No | |
-| Authentication information | **Yes** | Hub mode: the API key (and optional headers) the user enters for their own model provider is stored in chrome.storage.local and sent only to that provider with each model call; while unsaved it is kept in chrome.storage.session (in memory) until Save, Remove or a browser restart. The daemon token and the hub pin never leave the device. Password fields are excluded from page snapshots. |
+| Authentication information | **Yes** | Online mode: the relay sign-in token (rotating refresh token) is stored in chrome.storage.local and sent only to the relay. Hub mode: the API key (and optional headers) the user enters for their own model provider is stored in chrome.storage.local and sent only to that provider with each model call; while unsaved it is kept in chrome.storage.session (in memory) until Save, Remove or a browser restart. The daemon token and the hub pin never leave the device. Password fields are excluded from page snapshots. |
 | Personal communications | No | |
 | Location | No | |
-| Web history | **Yes** | URLs and titles of agent-owned tabs, and request URLs (origin + path) for the agent's `debug_logs` tool, are passed to the local daemon. Which tab ids belong to which agent session is kept in chrome.storage.local until the browser restarts (ids only, no URLs). |
+| Web history | **Yes** | URLs and titles of agent-owned tabs, and request URLs (origin + path) for the agent's `debug_logs` tool, are passed to the local daemon (Online mode: to the relay, in memory only). Which tab ids belong to which agent session is kept in chrome.storage.local until the browser restarts (ids only, no URLs). |
 | User activity | No | The extension does not monitor the user's clicks, keystrokes or browsing; it performs actions requested by agents in agent tabs. |
-| Website content | **Yes** | Text, controls and screenshots of agent-owned tabs are passed to the local daemon or hub. With `browse`, page text goes to the user's configured AI provider: sent by the daemon (daemon mode) or by the extension itself (hub mode). |
+| Website content | **Yes** | Text, controls and screenshots of agent-owned tabs are passed to the local daemon or hub, or in Online mode to the user's agents through the TabCrew relay (not stored there). With `browse`, page text goes to the user's configured AI provider: sent by the daemon (daemon mode) or by the extension itself (hub mode). |
 
 Certifications (check all three):
 
@@ -111,5 +117,5 @@ Source: `docs/privacy.md` in the repository.
 ## Notes for reviewers (optional "test instructions" field)
 
 ```
-TabCrew needs its local daemon to do anything. To test: on macOS with Node.js 20+, run "npx tabcrew setup" (press Enter to skip the OpenRouter key; everything except "browse" works without it, and a key can be added later in the popup's Advanced section). The popup then shows "connected". From a terminal, the daemon's MCP endpoint at http://127.0.0.1:8770/mcp (bearer token: "npx tabcrew token") accepts tool calls such as session_open, tab_create and observe; each session's tabs appear in the TabCrew window, in the shared "TabCrew" tab group (or in their own window, if chosen in the popup). Hub mode (no service, for browsers that block native messaging): build the repository (npm install && npm run build) and run "node cli/dist/cli.mjs mcp" from an MCP client; the popup then shows "connected", and Advanced → Model provider asks for host access to the provider on Load models, Test or Save. Source: https://github.com/huynle/tabcrew
+TabCrew needs its local daemon to do anything. To test: on macOS with Node.js 20+, run "npx tabcrew setup" (press Enter to skip the OpenRouter key; everything except "browse" works without it, and a key can be added later in the popup's Advanced section). The popup then shows "connected". From a terminal, the daemon's MCP endpoint at http://127.0.0.1:8770/mcp (bearer token: "npx tabcrew token") accepts tool calls such as session_open, tab_create and observe; each session's tabs appear in the TabCrew window, in the shared "TabCrew" tab group (or in their own window, if chosen in the popup). Hub mode (no service, for browsers that block native messaging): build the repository (npm install && npm run build) and run "node cli/dist/cli.mjs mcp" from an MCP client; the popup then shows "connected", and Advanced → Model provider asks for host access to the provider on Load models, Test or Save. Online mode (no install): in the popup set Connection to Online, enter a browser name and click Sign in (GitHub or Google); the badge shows "connected". Any MCP client with OAuth support can then use https://tabcrew.huynle.com/mcp after signing in with the same account. Source: https://github.com/huynle/tabcrew
 ```

@@ -6,6 +6,8 @@
 
 TabCrew lets AI agents use your real browser. One local daemon serves many agents at once, and each agent works in its own isolated browser session: its own tabs, and no access to anyone else's tabs. By default every agent's tabs open in one TabCrew window, in a shared "TabCrew" tab group; agents can also use named groups, or each get [their own window](#where-agent-tabs-open).
 
+Agents on other computers can use your browsers too: [Online mode](#online-mode-tabcrew-relay) connects each browser to the TabCrew relay at `tabcrew.huynle.com`, and any MCP client (or an MCP gateway) can then drive all your signed-in browsers from one address.
+
 Agents can drive pages step by step (`observe` / `act`) or hand a whole goal to `browse`. `browse` runs the [jev-ultrafast](https://github.com/browser-use/jev-ultrafast) loop (observe the page, choose one operation and target, act, repeat) using Jev through OpenRouter's Decisions API, plus a small text model for the values it types.
 
 TabCrew was previously called ChromeUse. It is not affiliated with or endorsed by Google.
@@ -31,7 +33,7 @@ Is your Chrome managed by your company, with native messaging blocked? Or do you
 
 Your agents (OpenCode, Claude Code, or any MCP client) can now call `session_open` and the other [tools](#tools). Remove everything with `npx tabcrew uninstall --purge`.
 
-TabCrew has no servers and no telemetry; see the [privacy policy](https://github.com/huynle/tabcrew/blob/main/docs/privacy.md) and [Security](#security).
+In daemon and hub mode TabCrew has no servers; Online mode is optional. There's no telemetry in any mode; see the [privacy policy](https://github.com/huynle/tabcrew/blob/main/docs/privacy.md) and [Security](#security).
 
 ### What setup does
 
@@ -155,6 +157,44 @@ Hub mode never uses `~/.tabcrew` and installs no launchd job or native messaging
 | Popup says **untrusted hub** | See [Trust on first use](#trust-on-first-use): **Trust this hub**, after `tabcrew mcp reset-pin` if the hub trusts another profile. |
 | `browse` returns `model_error` | The message says what to fix in **Advanced → Model provider**: no provider set; access to the provider's site not granted (click Save and choose Allow); 401/403 (check the key and headers); 404 (check the base URL and model). Use **Load models** or **Test** to check. |
 | Warning: hub version differs from `tabcrew mcp` | You rebuilt TabCrew while an old hub was still running. It is replaced after it idle-exits, or stop it now with `kill <pid>` (the pid is in `hub.json`). |
+
+## Online mode (TabCrew relay)
+
+Online mode lets agents anywhere use your browsers on several computers, through one MCP address. Nothing is installed but the extension.
+
+```
+MCP client / gateway ──HTTPS (OAuth)──▶ tabcrew.huynle.com/mcp ──▶ relay ──WebSocket (wss)──▶ extension on each computer ──▶ tabs
+                                                                                                └─▶ your model provider (HTTPS)
+```
+
+The relay runs the same software as the daemon, once per signed-in browser, and keeps every user's browsers and sessions apart. Sign-in is GitHub or Google; a GitHub account and a Google account are two separate TabCrew accounts, even with the same email.
+
+### Set it up
+
+1. **On each computer:** open the popup, set **Connection** to **Online**, give the browser a name (for example `home-mac` or `work-laptop`) and click **Sign in**. Use the same provider (GitHub or Google) everywhere. The badge turns **connected**.
+2. **Add the MCP server** to your client: `https://tabcrew.huynle.com/mcp`, with OAuth. For example in OpenCode:
+
+   ```jsonc
+   "tabcrew-online": { "type": "remote", "url": "https://tabcrew.huynle.com/mcp", "oauth": {} }
+   ```
+
+   or in Claude Code: `claude mcp add --transport http tabcrew-online https://tabcrew.huynle.com/mcp`. The client opens the relay's sign-in page once and refreshes its sign-in by itself.
+3. **Through an MCP gateway:** add `https://tabcrew.huynle.com/mcp` as an OAuth server with a per-user credential, connect it with the same GitHub or Google account, and approve its tools. The relay keeps sessions open between calls, so gateways that connect once per tool call work.
+4. **For `browse`:** set a model provider in each browser's popup (**Advanced → Model provider**), as in [hub mode](#set-it-up). The extension makes the model calls; the relay never sees your key.
+
+### Using several browsers
+
+- `browser_list` lists your browsers and whether each is online.
+- `session_open({browser: "work-laptop"})` opens a session on that browser. Without `browser`, the most recently connected online browser is used.
+- A session stays on its browser. It ends on `session_close`, when you stop it in the popup, or after 30 minutes without use. Agents should always call `session_close`.
+
+### Your controls
+
+- `https://tabcrew.huynle.com/account` lists your browsers and agents, with **Revoke** buttons.
+- **Pause agents in this browser** in a browser's popup stops agents from using it; **Sign out** disconnects it.
+- Switching a browser back to **Auto** or **Daemon** uses the local daemon again. A browser in Online mode doesn't serve its local daemon or hub.
+
+Limits: 10 browsers and 50 open sessions per account. What the relay stores and logs: [privacy policy](docs/privacy.md#online-mode-tabcrew-relay). The relay's code is in `relay/`; run your own with `relay/Dockerfile` and `relay/docker-compose.yml`, and enter its address in the popup's **Relay** field.
 
 ## CLI
 
@@ -408,7 +448,7 @@ See [`SECURITY.md`](SECURITY.md) for the threat model and how to report vulnerab
 just verify          # typecheck + offline tests + build (+ npm audit)
 ```
 
-Unit tests never open a browser, call a paid API, or touch your real home directory: the CLI tests run setup/doctor/uninstall against a temp HOME with fake `launchctl`, `claude` and `fetch`. The live scripts need the extension connected. By default they talk to the daemon over HTTP with the token from `~/.tabcrew/token`. With `TABCREW_TRANSPORT=shim` they run `node cli/dist/cli.mjs mcp` instead, exactly like OpenCode in hub mode. That needs no token, starts the hub if none is running, and passes any extra shim flags from `TABCREW_SHIM_ARGS`, e.g. `--port 8776`. With the shim, `isolation` and `concurrency` run one shim process per simulated agent. `isolation` and `concurrency` assume the default placement (**One TabCrew window, shared group**).
+Unit tests never open a browser, call a paid API, or touch your real home directory: the CLI tests run setup/doctor/uninstall against a temp HOME with fake `launchctl`, `claude` and `fetch`. The live scripts need the extension connected. By default they talk to the daemon over HTTP with the token from `~/.tabcrew/token`. With `TABCREW_TRANSPORT=shim` they run `node cli/dist/cli.mjs mcp` instead, exactly like OpenCode in hub mode. That needs no token, starts the hub if none is running, and passes any extra shim flags from `TABCREW_SHIM_ARGS`, e.g. `--port 8776`. With the shim, `isolation` and `concurrency` run one shim process per simulated agent. With `TABCREW_TRANSPORT=relay` they go through TabCrew Online (`$RELAY_URL/mcp`, default `https://tabcrew.huynle.com`) as the agent signed in by `node relay/scripts/live-extension.mjs login`; the browser must be in Online mode. `isolation` and `concurrency` assume the default placement (**One TabCrew window, shared group**).
 
 | Recipe | Checks | Cost |
 | --- | --- | --- |
