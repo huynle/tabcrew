@@ -1,6 +1,6 @@
 {
   "name": "@tabcrew/daemon",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "private": true,
   "description": "TabCrew daemon: HTTP MCP endpoint, sessions, per-tab scheduling, Jev loop, setup CLI",
   "license": "MIT",
@@ -22,7 +22,7 @@
     "jsonc-parser": "^3.3.1",
     "smol-toml": "^1.3.0",
     "ws": "^8.20.1",
-    "zod": "^3.25.0"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@types/node": "^25.5.2",
