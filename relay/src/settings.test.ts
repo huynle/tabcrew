@@ -162,10 +162,33 @@ describe("browse model calls through the relay", () => {
 
     const settings = await page(cookie);
     expect(settings.html).not.toContain("Using their own provider instead");
+    const account = await (await fetch(`${t.url}/account`, { headers: { cookie } })).text();
+    expect(account).toContain("extension test · uses the account's model settings");
     await ext.close();
     const own = await browser(ALICE, ["model_call", "groups", "account_model", "own_model"]);
     expect((await ask(own.tenant)).model).toBe("test/model");
     expect(own.ext.modelCalls).toHaveLength(1);
     expect((await page(cookie)).html).toContain("Using their own provider instead (set in their popup): <b>home-mac</b>");
+  });
+});
+
+describe("Browsers & agents: what browse uses per browser", () => {
+  it("older extensions use their popup's provider; offline browsers say nothing; no settings is flagged", async () => {
+    await start();
+    const cookie = await webLogin(ALICE, "/account");
+    const tok = await extLogin(t, ALICE, "old-laptop");
+    const ext = await FakeExtension.connect(t.port, tok.access_token, { features: ["model_call", "groups"] }, { origin: EXT_ORIGIN, path: "/ext" });
+    cleanups.push(() => ext.close());
+    const tok2 = await extLogin(t, ALICE, "new-laptop");
+    const ext2 = await FakeExtension.connect(t.port, tok2.access_token, { features: ["model_call", "groups", "account_model"] }, { origin: EXT_ORIGIN, path: "/ext" });
+    cleanups.push(() => ext2.close());
+    await until(() => t.relay.tenants.ofUser([...t.relay.tenants.all()][0]!.userId).filter((x) => x.core.bridge.connected).length === 2);
+    let html = await (await fetch(`${t.url}/account`, { headers: { cookie } })).text();
+    expect(html).toContain("uses its popup's provider");
+    expect(html).toContain("no model provider yet");
+    await ext.close();
+    await until(() => !t.relay.tenants.all().next().value || [...t.relay.tenants.all()].filter((x) => x.core.bridge.connected).length === 1);
+    html = await (await fetch(`${t.url}/account`, { headers: { cookie } })).text();
+    expect(html.slice(html.indexOf("old-laptop"), html.indexOf("Revoke", html.indexOf("old-laptop")))).not.toContain("uses");
   });
 });

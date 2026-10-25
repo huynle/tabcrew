@@ -132,7 +132,7 @@ export function shell(o: ShellOptions): string {
   const mainClass = o.layout === "narrow" ? ' class="narrow"' : "";
   const body = o.layout === "legal" ? `<div class="legal">${o.body}</div>` : o.body;
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="color-scheme" content="light dark"><title>${escapeHtml(o.title)} · TabCrew Online</title>
+<meta name="color-scheme" content="light dark"><title>${escapeHtml(o.title === "TabCrew Online" ? o.title : `${o.title} · TabCrew Online`)}</title>
 <link rel="stylesheet" href="/static/tabcrew.css"></head>
 <body><header class="topbar"><a class="brand" href="/"><span class="brand-mark" aria-hidden="true">TC</span>TabCrew Online</a><nav class="nav" aria-label="Main">${nav}</nav></header>
 <main${mainClass}>${body}</main>

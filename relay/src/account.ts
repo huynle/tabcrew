@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { PROVIDER_PRESETS, keyHint, presetFor, recommendedModels, type PresetId, type ProviderSettings } from "@tabcrew/shared/provider";
-import { V2_EXT_FEATURE_OWN_MODEL } from "@tabcrew/shared/v2";
+import { V2_EXT_FEATURE_ACCOUNT_MODEL, V2_EXT_FEATURE_OWN_MODEL } from "@tabcrew/shared/v2";
 import { ACCOUNT_COOKIE, EXTENSION_CLIENT_ID, type AuthServer } from "./auth/server.js";
 import type { Provider } from "./auth/providers.js";
 import { hmac, safeEqual } from "./crypto.js";
@@ -256,6 +256,7 @@ ${saved ? `<button class="danger" name="action" value="remove" style="margin-lef
     const csrf = this.csrf(cookie);
     const live = new Map(this.d.tenants.ofUser(userId).map((t) => [t.browserId, t]));
     const browsers = await this.d.store.listBrowsers(userId);
+    const hasSettings = (await this.d.models.get(userId)) !== null;
     const grants = await this.d.store.listGrants(userId);
     const lastActive = new Map<string, number>();
     for (const g of grants) {
@@ -272,10 +273,21 @@ ${saved ? `<button class="danger" name="action" value="remove" style="margin-lef
           .map((b) => {
             const t = live.get(b.id);
             const online = t?.core.bridge.connected === true;
-            const own = online && t!.core.bridge.features.includes(V2_EXT_FEATURE_OWN_MODEL);
+            const features = online ? t!.core.bridge.features : [];
             const version = online ? t!.core.bridge.version : null;
+            // What browse uses for this browser (relayModelTransport's rule); unknown while offline.
+            const source = !online
+              ? ""
+              : features.includes(V2_EXT_FEATURE_OWN_MODEL)
+                ? "uses its own model provider"
+                : features.includes(V2_EXT_FEATURE_ACCOUNT_MODEL)
+                  ? hasSettings
+                    ? "uses the account's model settings"
+                    : "no model provider yet (set one in Model settings)"
+                  : `uses its popup's provider (update the extension to use the account's model settings)`;
+            const meta = [version ? `extension ${escapeHtml(version)}` : "", source].filter(Boolean).join(" · ");
             return `<li><div><b>${escapeHtml(b.name)}</b> <span class="pill${online ? " ok" : ""}">${online ? "online" : "offline"}</span>
-<div class="small muted">${version ? `extension ${escapeHtml(version)} · ` : ""}${own ? "uses its own model provider" : "uses the account's model settings"}</div></div>
+${meta ? `<div class="small muted">${meta}</div>` : ""}</div>
 <form method="post" action="/account/revoke-browser">${hidden("csrf", csrf)}${hidden("browser_id", b.id)}<button class="small danger">Revoke</button></form></li>`;
           })
           .join("\n")
