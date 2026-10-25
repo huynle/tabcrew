@@ -35,6 +35,8 @@
 
 import {
   V2_CLOSE_BAD_HELLO,
+  V2_EXT_FEATURE_ACCOUNT_MODEL,
+  V2_EXT_FEATURE_OWN_MODEL,
   V2_CLOSE_PIN_MISMATCH,
   V2_EXT_FEATURE_GROUPS,
   V2_EXT_FEATURE_MODEL_CALL,
@@ -130,6 +132,8 @@ interface Connection {
   pin: V2HelloPin | null;
   /** Hub mode: "pending" until welcome, "verifying" while the proof is checked, "ok" once trusted. */
   auth: "pending" | "verifying" | "ok";
+  /** Online mode: the user chose this browser's own model provider (announces own_model). */
+  readonly ownModel?: boolean;
 }
 
 /** A refusal that stops retries until the config changes. */
@@ -186,7 +190,8 @@ export class Bridge {
         return;
       }
       const { url, accessToken } = config.online;
-      conn = { mode: "online", key: `online|${url}|${accessToken}`, token: accessToken, secret: null, url, pin: null, auth: "ok" };
+      const ownModel = config.online.ownModel === true;
+      conn = { mode: "online", key: `online|${url}|${accessToken}|${ownModel}`, token: accessToken, secret: null, url, pin: null, auth: "ok", ownModel };
     } else if (config.mode === "hub") {
       // The service worker creates the pin before pushing a hub config; without one there is nothing to send.
       if (!config.hubPin) {
@@ -323,7 +328,7 @@ export class Bridge {
         protocol: V2_PROTOCOL_VERSION,
         token: conn.token ?? "",
         extension_version: this.deps.extensionVersion,
-        features: [V2_EXT_FEATURE_MODEL_CALL, V2_EXT_FEATURE_GROUPS],
+        features: [V2_EXT_FEATURE_MODEL_CALL, V2_EXT_FEATURE_GROUPS, V2_EXT_FEATURE_ACCOUNT_MODEL, ...(conn.ownModel ? [V2_EXT_FEATURE_OWN_MODEL] : [])],
       };
     }
     if (conn.mode === "daemon") {

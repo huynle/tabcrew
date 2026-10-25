@@ -68,6 +68,10 @@ export interface Store {
   close(): Promise<void>;
 
   upsertIdentity(identity: IdentityInput): Promise<User>;
+  /** The user's sealed account model settings (see modelSettings.ts), or null. */
+  getModelSettings(userId: string): Promise<string | null>;
+  putModelSettings(userId: string, sealed: string): Promise<void>;
+  deleteModelSettings(userId: string): Promise<void>;
   getUser(id: string): Promise<User | null>;
 
   createClient(client: OAuthClient): Promise<void>;

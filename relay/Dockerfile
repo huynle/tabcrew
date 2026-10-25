@@ -28,6 +28,7 @@ RUN npm ci --omit=dev --no-audit --no-fund --ignore-scripts && npm cache clean -
 COPY --from=build /src/shared/dist shared/dist
 COPY --from=build /src/daemon/dist daemon/dist
 COPY --from=build /src/relay/dist relay/dist
+COPY relay/static relay/static
 USER node
 EXPOSE 8790
 HEALTHCHECK --interval=30s --timeout=3s CMD wget -qO- http://127.0.0.1:8790/healthz >/dev/null || exit 1

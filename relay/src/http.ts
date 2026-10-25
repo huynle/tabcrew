@@ -22,7 +22,7 @@ export function sendHtml(
     "content-type": "text/html; charset=utf-8",
     "cache-control": "no-store",
     "x-frame-options": "DENY",
-    "content-security-policy": `default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; form-action ${opts.forms ? ["'self'", ...(opts.formTargets ?? [])].join(" ") : "'none'"}`,
+    "content-security-policy": `default-src 'none'; style-src 'self' 'unsafe-inline'; font-src 'self'; frame-ancestors 'none'; form-action ${opts.forms ? ["'self'", ...(opts.formTargets ?? [])].join(" ") : "'none'"}`,
     "referrer-policy": "no-referrer",
     ...opts.headers,
   });

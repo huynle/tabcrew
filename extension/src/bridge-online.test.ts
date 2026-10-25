@@ -56,6 +56,18 @@ describe("Bridge online mode", () => {
     expect(JSON.stringify(ws.frames())).not.toContain("daemon-token");
   });
 
+  it("announces account model settings, and own_model only when this browser uses its own provider", async () => {
+    const config = { current: onlineConfig() };
+    const { bridge } = makeBridge(config);
+    const ws = await opened(bridge);
+    expect(ws.frames()[0].features).toEqual(["model_call", "groups", "account_model"]);
+    config.current = { ...onlineConfig(), online: { url: "wss://tabcrew.huynle.com/ext", accessToken: "tca.access-1", ownModel: true } };
+    await bridge.reconfigure();
+    const again = FakeSocket.instances.at(-1)!;
+    again.serverOpen();
+    expect(again.frames()[0].features).toEqual(["model_call", "groups", "account_model", "own_model"]);
+  });
+
   it("is connected after welcome and handles requests and model calls", async () => {
     const { bridge, deps } = makeBridge({ current: onlineConfig() });
     const ws = await opened(bridge);

@@ -28,6 +28,16 @@ function contract(name: string, make: () => Store, enabled = true) {
       expect((await store.getUser(a.id))?.disabled).toBe(false);
     });
 
+    it("model settings: one sealed value per user, replaced and deleted", async () => {
+      const u = await store.upsertIdentity({ provider: "github", subject: id() });
+      expect(await store.getModelSettings(u.id)).toBeNull();
+      await store.putModelSettings(u.id, "v1.a.b");
+      await store.putModelSettings(u.id, "v1.c.d");
+      expect(await store.getModelSettings(u.id)).toBe("v1.c.d");
+      await store.deleteModelSettings(u.id);
+      expect(await store.getModelSettings(u.id)).toBeNull();
+    });
+
     it("clients round-trip", async () => {
       const c = { id: id(), name: "Agent", redirectUris: ["http://127.0.0.1/cb"], kind: "mcp" as const };
       await store.createClient(c);

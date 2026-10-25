@@ -80,6 +80,18 @@ describe("popup.html / popup.ts wiring", () => {
     expect(edit).toContain('e.key === "Escape"');
   });
 
+  it("Online mode: account model settings link and the own-provider toggle, before the provider form", () => {
+    expect(tag("online-model-group")).toMatch(/\bhidden\b/);
+    const group = html.slice(html.indexOf('id="online-model-group"'), html.indexOf('id="provider-group"'));
+    expect(group).toContain('id="open-model-settings"');
+    expect(group).toMatch(/<input type="checkbox" id="own-model" \/> Use this browser's own provider instead/);
+    const apply = ts.slice(ts.indexOf("function applyOwnModel("), ts.indexOf("\n}\n", ts.indexOf("function applyOwnModel(")));
+    expect(apply).toContain('$("online-model-group").hidden = mode !== "online"');
+    expect(apply).toContain('if (mode === "online") $("provider-group").hidden = !ownModel');
+    expect(ts).toContain("chrome.storage.local.set({ [OWN_MODEL_KEY]: ownModel })");
+    expect(ts).toContain("/settings`");
+  });
+
   it("marks the daemon-only groups and keeps the provider hidden until hub mode", () => {
     expect(tag("provider-group")).toMatch(/class="group hub-only"/);
     expect(tag("provider-group")).toMatch(/\bhidden\b/);

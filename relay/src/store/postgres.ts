@@ -47,6 +47,11 @@ CREATE TABLE IF NOT EXISTS browsers (
 );
 ALTER TABLE browsers ADD COLUMN IF NOT EXISTS revoked boolean NOT NULL DEFAULT false;
 CREATE INDEX IF NOT EXISTS refresh_tokens_user ON refresh_tokens (user_id);
+CREATE TABLE IF NOT EXISTS model_settings (
+  user_id text PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  sealed text NOT NULL,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
 `;
 
 type Row = Record<string, any>;
@@ -122,6 +127,22 @@ export class PostgresStore implements Store {
   async getUser(id: string): Promise<User | null> {
     const r = await this.pool.query("SELECT * FROM users WHERE id = $1", [id]);
     return r.rows[0] ? toUser(r.rows[0]) : null;
+  }
+
+  async getModelSettings(userId: string): Promise<string | null> {
+    const r = await this.pool.query("SELECT sealed FROM model_settings WHERE user_id = $1", [userId]);
+    return r.rows[0]?.sealed ?? null;
+  }
+
+  async putModelSettings(userId: string, sealed: string): Promise<void> {
+    await this.pool.query(
+      "INSERT INTO model_settings (user_id, sealed) VALUES ($1, $2) ON CONFLICT (user_id) DO UPDATE SET sealed = EXCLUDED.sealed, updated_at = now()",
+      [userId, sealed],
+    );
+  }
+
+  async deleteModelSettings(userId: string): Promise<void> {
+    await this.pool.query("DELETE FROM model_settings WHERE user_id = $1", [userId]);
   }
 
   async createClient(c: OAuthClient): Promise<void> {

@@ -1,7 +1,9 @@
 import type { V2SettingsPatch, V2SettingsView } from "@tabcrew/shared/v2";
 import {
   PORT_KEY,
+  OWN_MODEL_KEY,
   TOKEN_KEY,
+  loadOwnModel,
   parseModeSetting,
   saveModeSetting,
   type ConnectionMode,
@@ -264,12 +266,45 @@ function renderMode(state: PopupState): void {
   // The model provider serves hub and online mode (model calls go through this extension in both).
   document.querySelectorAll<HTMLElement>(".hub-only").forEach((el) => (el.hidden = mode === "daemon"));
   document.querySelectorAll<HTMLElement>(".local-only").forEach((el) => (el.hidden = mode === "online"));
+  applyOwnModel();
   if (mode !== "daemon") void loadProvider(first);
 }
+
+// ---------------------------------------------------------------------------
+// Online mode: model settings live in the TabCrew account (the relay calls the provider). The
+// popup's Model provider form only shows when "Use this browser's own provider" is on.
+// ---------------------------------------------------------------------------
+
+let ownModel = false;
+let relayUrl = "https://tabcrew.huynle.com";
+
+function applyOwnModel(): void {
+  $("online-model-group").hidden = mode !== "online";
+  $<HTMLInputElement>("own-model").checked = ownModel;
+  if (mode === "online") $("provider-group").hidden = !ownModel;
+}
+
+void loadOwnModel().then((value) => {
+  ownModel = value;
+  if (modeKnown) applyOwnModel();
+});
+
+$<HTMLInputElement>("own-model").addEventListener("change", (e) => {
+  ownModel = (e.target as HTMLInputElement).checked;
+  void chrome.storage.local.set({ [OWN_MODEL_KEY]: ownModel });
+  applyOwnModel();
+  if (ownModel) void loadProvider(false);
+});
+
+$("open-model-settings").addEventListener("click", () => {
+  void chrome.tabs.create({ url: `${relayUrl.replace(/\/+$/, "")}/settings` });
+  window.close();
+});
 
 /** The Online account box shows while Online is chosen or in use. */
 function renderOnline(state: PopupState): void {
   const view = onlineView(state);
+  if (state.online?.relay_url) relayUrl = state.online.relay_url;
   $("online-group").hidden = !(state.mode_setting === "online" || popupMode(state) === "online");
   const relay = $<HTMLInputElement>("relay-url");
   const name = $<HTMLInputElement>("browser-name");

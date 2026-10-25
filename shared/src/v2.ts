@@ -92,6 +92,13 @@ export function v2IsFinishMode(value: unknown): value is V2FinishMode {
 
 /** Extension feature (in `hello.features`): it understands shared groups (`group`, finish modes, group ops). */
 export const V2_EXT_FEATURE_GROUPS = "groups";
+/**
+ * Online mode (extension feature): the extension knows TabCrew account model settings, so with
+ * none set the relay reports "set them in your account" instead of asking the browser.
+ */
+export const V2_EXT_FEATURE_ACCOUNT_MODEL = "account_model";
+/** Online mode (extension feature): the user chose "use this browser's own provider" in the popup. */
+export const V2_EXT_FEATURE_OWN_MODEL = "own_model";
 /** The default name of the shared TabCrew group (the user can change it in the popup). */
 export const V2_DEFAULT_GROUP_NAME = "TabCrew";
 /** Longest group name, in characters (code points), after normalising. */

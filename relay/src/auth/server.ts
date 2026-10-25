@@ -3,6 +3,7 @@ import { isTabcrewExtensionOrigin } from "@tabcrew/shared/product";
 import { newId, pkceMatches, randomToken, sha256, signAccess, verifyAccess, type AccessClaims } from "../crypto.js";
 import type { Audience, OAuthClient, Store } from "../store/types.js";
 import { readBody, sendHtml, sendJson, escapeHtml } from "../http.js";
+import { shell } from "../ui.js";
 import { log } from "@tabcrew/daemon/dist/log.js";
 import type { Provider } from "./providers.js";
 
@@ -133,12 +134,13 @@ export class AuthServer {
   }
 
   /** Account page sign-in: straight to the provider, back to /account with a session cookie. */
-  async startWebLogin(res: ServerResponse, providerId: string): Promise<void> {
+  /** `next`: where to land after signing in (only "/account" or "/settings"). */
+  async startWebLogin(res: ServerResponse, providerId: string, next = "/account"): Promise<void> {
     const provider = this.o.providers.find((p) => p.id === providerId);
     if (!provider) throw new OAuthError("invalid_request", "Unknown sign-in provider.", 404);
     const txn: AuthTxn = {
       clientId: "account",
-      redirectUri: `${this.o.publicUrl}/account`,
+      redirectUri: `${this.o.publicUrl}${next === "/settings" ? "/settings" : "/account"}`,
       state: null,
       challenge: "",
       audience: "web",
@@ -348,7 +350,7 @@ export class AuthServer {
       const value = signAccess({ sub: user.id, aud: "web", cid: "account", iat, exp: iat + WEB_TTL_SEC }, this.o.signingKey);
       const secure = this.o.publicUrl.startsWith("https:") ? "; Secure" : "";
       res.writeHead(303, {
-        location: "/account",
+        location: txn.redirectUri.endsWith("/settings") ? "/settings" : "/account",
         "set-cookie": `${ACCOUNT_COOKIE}=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${WEB_TTL_SEC}${secure}`,
         "cache-control": "no-store",
       });
@@ -465,10 +467,10 @@ export class AuthServer {
     const buttons = this.o.providers
       .map(
         (p) =>
-          `<form method="post" action="/auth/${p.id}"><input type="hidden" name="txn" value="${escapeHtml(txnId)}"><button class="btn">Continue with ${escapeHtml(p.label)}</button></form>`,
+          `<form method="post" action="/auth/${p.id}"><input type="hidden" name="txn" value="${escapeHtml(txnId)}"><button class="btn block${p === this.o.providers[0] ? " primary" : ""}">Continue with ${escapeHtml(p.label)}</button></form>`,
       )
       .join("\n");
-    sendHtml(res, 200, page("Sign in to TabCrew", `<p>${what}</p>\n${buttons}\n<p class="small">Only continue if you started this yourself.</p>`), {
+    sendHtml(res, 200, page("Sign in to TabCrew", `<p>${what}</p>\n<div class="stack">${buttons}</div>\n<p class="small muted" style="margin-top:1rem">Only continue if you started this yourself.</p>`), {
       forms: true,
       // The provider buttons POST here and are redirected to the provider's sign-in page.
       formTargets: this.o.providers.map((p) => new URL(p.authorizeUrl({ state: "x", redirectUri: this.o.publicUrl })).origin),
@@ -492,10 +494,5 @@ async function readForm(req: IncomingMessage): Promise<Record<string, string>> {
 }
 
 function page(title: string, body: string): string {
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${escapeHtml(title)}</title>
-<style>body{font:16px/1.5 system-ui,sans-serif;max-width:28rem;margin:4rem auto;padding:0 1rem;color:#1d1d1f}
-h1{font-size:1.4rem}.btn{display:block;width:100%;font:inherit;background:none;cursor:pointer;text-align:center;margin:.6rem 0;padding:.7rem;border:1px solid #888;border-radius:.5rem;color:inherit;text-decoration:none}
-.btn:hover{background:#f2f2f2}.small{font-size:.85rem;color:#666}code{font-size:.9em}</style></head>
-<body><h1>${escapeHtml(title)}</h1>${body}</body></html>`;
+  return shell({ title, layout: "narrow", body: `<div class="card"><h1>${escapeHtml(title)}</h1>${body}</div>` });
 }

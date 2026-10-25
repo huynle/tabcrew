@@ -299,7 +299,17 @@ export interface BridgeConfig {
   /** Hub mode only: the TOFU pin (null until created). */
   readonly hubPin?: HubPin | null;
   /** Online mode only: the relay socket URL and a fresh access token (null when signed out). */
-  readonly online?: { readonly url: string; readonly accessToken: string } | null;
+  readonly online?: { readonly url: string; readonly accessToken: string; readonly ownModel?: boolean } | null;
+}
+
+/**
+ * Online mode: "Use this browser's own provider" (popup). Off: the relay calls the provider set in
+ * the TabCrew account; on: this extension answers model_call with the popup's Model provider.
+ */
+export const OWN_MODEL_KEY = "v2:onlineOwnModel";
+
+export async function loadOwnModel(): Promise<boolean> {
+  return (await chrome.storage.local.get(OWN_MODEL_KEY))[OWN_MODEL_KEY] === true;
 }
 
 /** A valid port, or the default port of `mode` (daemon mode when not given). */

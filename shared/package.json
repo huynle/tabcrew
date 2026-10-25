@@ -16,6 +16,10 @@
       "types": "./dist/v2.d.ts",
       "import": "./dist/v2.js"
     },
+    "./provider": {
+      "types": "./dist/provider.d.ts",
+      "import": "./dist/provider.js"
+    },
     "./product": {
       "types": "./dist/product.d.ts",
       "import": "./dist/product.js"

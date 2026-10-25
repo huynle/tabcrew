@@ -16,6 +16,8 @@ import { CdpManager } from "./cdp.js";
 import {
   HUB_PIN_KEY,
   MODE_KEY,
+  OWN_MODEL_KEY,
+  loadOwnModel,
   ONLINE_PREFS_KEY,
   PAUSED_KEY,
   PORT_KEY,
@@ -79,7 +81,10 @@ const onlineDeps: OnlineDeps = {
 async function loadBridgeConfig() {
   const config = await loadConfig();
   if (config.mode === "hub" && !config.hubPin) return { ...config, hubPin: await ensureHubPin() };
-  if (config.mode === "online") return { ...config, online: await freshAccess(onlineDeps) };
+  if (config.mode === "online") {
+    const access = await freshAccess(onlineDeps);
+    return { ...config, online: access && { ...access, ownModel: await loadOwnModel() } };
+  }
   return config;
 }
 
@@ -198,6 +203,9 @@ chrome.storage.onChanged.addListener((changes, area) => {
     void bridge.pushConfig(true);
     // A mode switch to daemon mode may need pairing.
     if (MODE_KEY in changes) void pairing.ensurePaired().catch(() => undefined);
+  } else if (OWN_MODEL_KEY in changes) {
+    // Announce (or stop announcing) own_model: reconnect with the new hello.
+    void bridge.pushConfig(true);
   } else if (HUB_PIN_KEY in changes) {
     // The offscreen bridge reconnects only if the secret changed ("Trust this hub"), not for a confirmation.
     void bridge.pushConfig(false);

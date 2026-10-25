@@ -180,7 +180,7 @@ The relay runs the same software as the daemon, once per signed-in browser, and 
 
    or in Claude Code: `claude mcp add --transport http tabcrew-online https://tabcrew.huynle.com/mcp`. The client opens the relay's sign-in page once and refreshes its sign-in by itself.
 3. **Through an MCP gateway:** add `https://tabcrew.huynle.com/mcp` as an OAuth server with a per-user credential, connect it with the same GitHub or Google account, and approve its tools. The relay keeps sessions open between calls, so gateways that connect once per tool call work.
-4. **For `browse`:** set a model provider in each browser's popup (**Advanced → Model provider**), as in [hub mode](#set-it-up). The extension makes the model calls; the relay never sees your key.
+4. **For `browse`:** open **Model settings** at `https://tabcrew.huynle.com/settings` (or **Open model settings** in the popup) and set one provider, API key and models for all your browsers. **Save & load models** lists the provider's chat models to pick from; **Save & test** sends a tiny request. The relay calls the provider itself, so browsers need no key and no extra permissions. The key is stored encrypted and never shown again. Providers must be public `https://` addresses; for a provider only one computer can reach (for example on your LAN), turn on **Use this browser's own provider** in that browser's popup and set it there, as in [hub mode](#set-it-up).
 
 ### Using several browsers
 

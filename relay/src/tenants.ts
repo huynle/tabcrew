@@ -4,6 +4,7 @@ import { HUB_MODEL_PLACEHOLDER } from "@tabcrew/daemon/dist/hub/config.js";
 import { Limiter } from "@tabcrew/daemon/dist/jev/browse.js";
 import { log } from "@tabcrew/daemon/dist/log.js";
 import { sha256 } from "./crypto.js";
+import { relayModelTransport, type AccountModels } from "./modelSettings.js";
 
 /** One signed-in browser of one user: its own TabCrew core (sessions, bridge, browse runtime). */
 export interface BrowserTenant {
@@ -26,6 +27,10 @@ export interface TenantOptions {
   readonly tenantIdleMs?: number;
   readonly browseConcurrency?: number;
   readonly now?: () => number;
+  /** Account model settings: the relay calls the provider unless the browser uses its own. */
+  readonly models?: AccountModels;
+  /** Shown in "set a model provider" errors. */
+  readonly settingsUrl?: string;
 }
 
 /**
@@ -101,6 +106,9 @@ export class TenantManager {
           idleTimeoutMs: this.o.sessionIdleMs ?? 30 * 60_000,
         }),
       };
+      if (this.o.models) {
+        t.core.jev.transport = relayModelTransport({ userId, models: this.o.models, bridge: t.core.bridge, settingsUrl: this.o.settingsUrl ?? "/settings" });
+      }
       tenant = t;
       this.browsers.set(browserId, tenant);
       log.info(`relay: browser tenant created (${this.browsers.size} active)`);

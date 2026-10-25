@@ -4,6 +4,8 @@
  *   RELAY_PUBLIC_URL        public base URL, e.g. https://tabcrew.huynle.com (required)
  *   RELAY_PORT              listen port (default 8790); RELAY_HOST (default 0.0.0.0)
  *   RELAY_SIGNING_KEY       hex, >= 32 bytes: signs access tokens (required)
+ *   RELAY_SECRETS_KEY       hex, exactly 32 bytes: encrypts account model settings (API keys). Optional:
+ *                           without it /settings is off and browsers use their own provider.
  *   DATABASE_URL            Postgres connection string; or RELAY_STORE=memory for local runs
  *   GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET, GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET (at least one pair)
  *   RELAY_TRUST_PROXY=1     behind a reverse proxy (ingress): client IPs from X-Forwarded-For
@@ -27,6 +29,10 @@ const env = process.env;
 const publicUrl = env.RELAY_PUBLIC_URL?.trim() || fail("RELAY_PUBLIC_URL is required");
 const keyHex = env.RELAY_SIGNING_KEY?.trim() ?? "";
 if (!/^[0-9a-fA-F]{64,}$/.test(keyHex)) fail("RELAY_SIGNING_KEY must be at least 32 bytes of hex (openssl rand -hex 32)");
+
+const secretsHex = env.RELAY_SECRETS_KEY?.trim() ?? "";
+if (secretsHex && !/^[0-9a-fA-F]{64}$/.test(secretsHex)) fail("RELAY_SECRETS_KEY must be exactly 32 bytes of hex (openssl rand -hex 32)");
+const secretsKey = secretsHex ? Buffer.from(secretsHex, "hex") : null;
 
 const providers: Provider[] = [];
 if (env.GITHUB_CLIENT_ID && env.GITHUB_CLIENT_SECRET) {
@@ -60,6 +66,7 @@ const limits: Limits = {
 const relay = await startRelay({
   store,
   signingKey: Buffer.from(keyHex, "hex"),
+  secretsKey,
   providers,
   publicUrl,
   host: env.RELAY_HOST || "0.0.0.0",
@@ -67,7 +74,7 @@ const relay = await startRelay({
   limits,
   trustProxy: env.RELAY_TRUST_PROXY === "1",
 });
-log.info(`sign-in providers: ${providers.map((p) => p.id).join(", ")}; store: ${env.RELAY_STORE === "memory" ? "memory" : "postgres"}`);
+log.info(`sign-in providers: ${providers.map((p) => p.id).join(", ")}; store: ${env.RELAY_STORE === "memory" ? "memory" : "postgres"}; account model settings: ${secretsKey ? "on" : "off (no RELAY_SECRETS_KEY)"}`);
 
 let stopping = false;
 for (const signal of ["SIGINT", "SIGTERM"] as const) {

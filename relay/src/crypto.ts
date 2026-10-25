@@ -1,4 +1,4 @@
-import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 
 /** Prefixed random id, e.g. `u_…` for users, `b_…` for browsers. */
 export function newId(prefix: string, bytes = 12): string {
@@ -64,4 +64,32 @@ export function verifyAccess(token: string, aud: AccessClaims["aud"], key: Buffe
   }
   if (claims.aud !== aud || typeof claims.sub !== "string" || typeof claims.exp !== "number") return null;
   return claims.exp * 1000 > nowMs ? claims : null;
+}
+
+/**
+ * AES-256-GCM for secrets at rest (account model settings). `context` (e.g. the user id) is bound
+ * as additional data, so a sealed value cannot be moved to another user. Format: `v1.<iv>.<ct+tag>`.
+ */
+export function seal(key: Buffer, context: string, plaintext: string): string {
+  if (key.length !== 32) throw new Error("secrets key must be 32 bytes");
+  const iv = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", key, iv);
+  cipher.setAAD(Buffer.from(context, "utf8"));
+  const ct = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final(), cipher.getAuthTag()]);
+  return `v1.${iv.toString("base64url")}.${ct.toString("base64url")}`;
+}
+
+/** The plaintext of `seal(key, context, …)`, or null if it was tampered with or sealed elsewhere. */
+export function unseal(key: Buffer, context: string, sealed: string): string | null {
+  const [v, ivText, ctText] = sealed.split(".");
+  if (v !== "v1" || !ivText || !ctText) return null;
+  try {
+    const ct = Buffer.from(ctText, "base64url");
+    const decipher = createDecipheriv("aes-256-gcm", key, Buffer.from(ivText, "base64url"));
+    decipher.setAAD(Buffer.from(context, "utf8"));
+    decipher.setAuthTag(ct.subarray(ct.length - 16));
+    return Buffer.concat([decipher.update(ct.subarray(0, ct.length - 16)), decipher.final()]).toString("utf8");
+  } catch {
+    return null;
+  }
 }

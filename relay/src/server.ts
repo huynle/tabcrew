@@ -14,6 +14,9 @@ import type { Provider } from "./auth/providers.js";
 import { AuthServer } from "./auth/server.js";
 import { bearer, readBody, sendJson } from "./http.js";
 import { sitePage } from "./site.js";
+import { serveStatic } from "./ui.js";
+import { AccountModels } from "./modelSettings.js";
+import type { HttpClient } from "./egress.js";
 import { clientIp, DEFAULT_LIMITS, TokenBucket, type Limits } from "./limits.js";
 import { createRelayProtocolServer } from "./mcpServer.js";
 import type { Store } from "./store/types.js";
@@ -40,6 +43,10 @@ export interface RelayOptions {
   readonly limits?: Partial<Limits>;
   /** Behind a reverse proxy: take the client IP from X-Forwarded-For (its right-most entry). */
   readonly trustProxy?: boolean;
+  /** 32 bytes: encrypts account model settings. Without it, /settings is off (browsers use their own provider). */
+  readonly secretsKey?: Buffer | null;
+  /** Outbound HTTPS to model providers (tests inject a fake; default: public addresses only). */
+  readonly modelHttp?: HttpClient;
   /** Tool calls and MCP replies at least this slow are logged at info (default 10 s). */
   readonly slowCallMs?: number;
 }
@@ -86,8 +93,11 @@ export async function startRelay(o: RelayOptions): Promise<RunningRelay> {
   const slowCallMs = o.slowCallMs ?? 10_000;
   /** `${userId}|${clientId}` -> until (ms): revoked clients whose access tokens may not have expired yet. */
   const revokedClients = new Map<string, number>();
+  const models = new AccountModels({ store: o.store, key: o.secretsKey ?? null, http: o.modelHttp, now });
   const tenants = new TenantManager({
     version,
+    models,
+    settingsUrl: `${(o.publicUrl ?? "").replace(/\/$/, "")}/settings`,
     offlineWaitMs: o.offlineWaitMs,
     sessionIdleMs: o.sessionIdleMs,
     tenantIdleMs: o.tenantIdleMs,
@@ -142,6 +152,7 @@ export async function startRelay(o: RelayOptions): Promise<RunningRelay> {
         }
       }
     }
+    if (serveStatic(req, res, url)) return;
     if (sitePage(req, res, url, publicUrl)) return;
     if (await account!.handle(req, res, url)) return;
     if (await auth!.handle(req, res, url)) return;
@@ -309,6 +320,8 @@ export async function startRelay(o: RelayOptions): Promise<RunningRelay> {
     providers: o.providers,
     tenants,
     signingKey: o.signingKey,
+    models,
+    now,
     refreshTtlMs: 30 * 24 * 3600 * 1000,
     revokeClient(userId, clientId) {
       for (const [key, until] of revokedClients) if (until <= now()) revokedClients.delete(key);

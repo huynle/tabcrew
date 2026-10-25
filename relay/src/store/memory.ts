@@ -24,6 +24,17 @@ export class MemoryStore implements Store {
     return user;
   }
 
+  private readonly modelSettings = new Map<string, string>();
+  async getModelSettings(userId: string): Promise<string | null> {
+    return this.modelSettings.get(userId) ?? null;
+  }
+  async putModelSettings(userId: string, sealed: string): Promise<void> {
+    this.modelSettings.set(userId, sealed);
+  }
+  async deleteModelSettings(userId: string): Promise<void> {
+    this.modelSettings.delete(userId);
+  }
+
   async getUser(id: string): Promise<User | null> {
     return this.users.get(id) ?? null;
   }

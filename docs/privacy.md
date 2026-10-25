@@ -4,14 +4,14 @@ title: TabCrew privacy policy
 
 # TabCrew privacy policy
 
-Effective date: October 24, 2026. Applies to the TabCrew browser extension and the `tabcrew` command-line tool (the local "daemon", and in hub mode the local "hub" started by `tabcrew mcp`), version 0.4.0 and later, and to the TabCrew Online relay at `https://tabcrew.huynle.com` (extension version 0.6.0 and later).
+Effective date: October 25, 2026. Applies to the TabCrew browser extension and the `tabcrew` command-line tool (the local "daemon", and in hub mode the local "hub" started by `tabcrew mcp`), version 0.4.0 and later, and to the TabCrew Online relay at `https://tabcrew.huynle.com` (extension version 0.6.0 and later).
 
 ## The short version
 
 - In its local modes (daemon and hub), TabCrew has no servers and no accounts, and the developer never receives any of your data.
-- **Online mode is optional** and off unless you choose it. It connects your browser to the TabCrew relay at `tabcrew.huynle.com`, run by the developer, so that your agents can reach your browsers from anywhere. You sign in with GitHub or Google. The relay stores a small account record (see [Online mode](#online-mode-tabcrew-relay)) and passes agent commands and the content of agent tabs between your agents and your browser, without storing that content.
+- **Online mode is optional** and off unless you choose it. It connects your browser to the TabCrew relay at `tabcrew.huynle.com`, run by the developer, so that your agents can reach your browsers from anywhere. You sign in with GitHub or Google. The relay stores a small account record and, if you set them, your model provider settings with your API key, encrypted (see [Online mode](#online-mode-tabcrew-relay)). It passes agent commands and the content of agent tabs between your agents and your browser, without storing that content, and sends page content to your model provider when you use `browse`.
 - There are no analytics, telemetry, crash reports, ads or tracking, in any mode.
-- In daemon and hub mode, the extension only talks to the TabCrew daemon or hub running on your own computer (`127.0.0.1`). In hub and Online mode it also talks to the AI model provider **you** configured in its popup. In Online mode it also talks to the relay. It talks to no one else.
+- In daemon and hub mode, the extension only talks to the TabCrew daemon or hub running on your own computer (`127.0.0.1`). In hub mode, and in Online mode when you choose this browser's own provider, it also talks to the AI model provider **you** configured in its popup. In Online mode it also talks to the relay. It talks to no one else.
 - If you use the `browse` tool, the content of the agent's page goes to the AI model provider **you** configured, using **your** API key. In daemon mode the daemon on your computer sends it; in hub mode the extension sends it directly. Nothing else leaves your computer because of TabCrew.
 
 ## What TabCrew is
@@ -71,10 +71,11 @@ Online mode is for using your browsers from agents on other computers, or throug
 | The agents (MCP clients) you signed in: their name and the address they return to after sign-in | So they can refresh their sign-in, and so you can see and revoke them | Until revoked or deleted |
 | Sign-in tokens, stored only as one-way hashes | To keep the extension and your agents signed in | Until they expire, are replaced or are revoked |
 | One-time sign-in steps and codes | To finish a sign-in | 10 minutes and 1 minute |
+| Your model settings, if you set them on the **Model settings** page: provider address, API key, optional extra headers and model names | So the relay can call your model provider for `browse` from any of your browsers. Encrypted (AES-256-GCM) with a key only the relay server has; the API key is never shown again (only its last 4 characters) and never sent to your browsers | Until you click **Remove** or your account is deleted |
 
 **What passes through the relay without being stored.** Your agents' tool calls and their answers travel through the relay: the text, links, buttons and form fields of agent tabs, screenshots, console messages and request metadata, page URLs and titles, and the agent sessions themselves (labels, group names, which tabs belong to which session). The relay keeps them in memory only while they are in use. An agent session ends when the agent closes it, when you stop it in the popup, or after 30 minutes without use. The relay never writes page content, screenshots or typed text to its database or its logs. The connections are encrypted (HTTPS), but the relay itself handles this data unencrypted, as any MCP server does. If you add the relay to an MCP gateway, that gateway handles it too.
 
-**Model provider and `browse`.** As in hub mode, the AI model calls for `browse` are made by the extension, directly to the provider you saved in its popup, with your key. The relay prepares those requests (so it handles the page content in them, as above), but it never receives your API key.
+**Model provider and `browse`.** If you set a provider on the relay's **Model settings** page, the relay itself sends the `browse` requests (the agent's goal, and the current page's visible text and list of controls) to that provider, with your key and headers, and only to that provider's `/models` and `/chat/completions` addresses. **Load models** and **Test** on that page ask the same provider for its model list and send a tiny chat message. The relay only connects to providers on the public internet over HTTPS. That provider's privacy policy applies to what it receives. If a browser uses its own provider instead (popup: **Use this browser's own provider**), the extension makes those calls directly, as in hub mode, and the relay never receives that key. Without either, `browse` is disabled and nothing is sent.
 
 **Logs.** The relay logs sign-in steps (for example "Google sign-in ok"), browser connections and disconnections, refused requests, and errors, with times. Logs never contain page content, typed text, tokens, codes or keys. The web server in front of the relay may log standard request details (IP address, time, address requested). Logs are kept on the developer's server and rotated.
 
@@ -90,7 +91,7 @@ Daemon mode: in `~/.tabcrew/` (readable only by your user account), the access t
 
 Hub mode uses no `~/.tabcrew`. It keeps the list of open agent sessions, its logs and its runtime files in a private per-user temporary folder, and the pairing pin in `~/Library/Application Support/TabCrew/` (macOS). The provider settings and key stay in the extension's local storage; unsaved changes to them stay in its session storage until you save or remove them, or the browser restarts.
 
-In Online mode the extension keeps the relay address, the browser's name and its sign-in token (`v2:online`) in its local storage, and the provider settings as in hub mode.
+In Online mode the extension keeps the relay address, the browser's name, its sign-in token (`v2:online`) and whether it uses its own provider in its local storage, and its own provider settings, if you set any, as in hub mode.
 
 In every mode the extension's local storage also holds your settings, the TabCrew group names, and which tabs, groups and window belong to which agent session (ids only, wiped when the browser restarts).
 
@@ -98,7 +99,7 @@ Removing the extension deletes its local storage.
 
 ## Sharing and selling
 
-TabCrew does not sell, rent or share your data with anyone. In the local modes the developer does not collect it in the first place; in Online mode the relay keeps only the account data described above. Data is used only to do what you or your agents ask TabCrew to do in your browser.
+TabCrew does not sell, rent or share your data with anyone. In the local modes the developer does not collect it in the first place; in Online mode the relay keeps only the account data and model settings described above. Data is used only to do what you or your agents ask TabCrew to do in your browser.
 
 ## Children
 
