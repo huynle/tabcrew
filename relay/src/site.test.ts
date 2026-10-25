@@ -36,6 +36,18 @@ describe("public pages", () => {
     expect(html).not.toContain("title: TabCrew privacy policy");
   });
 
+  it("links the stylesheet by content version, and serves it and the fonts", async () => {
+    const html = await (await fetch(`${t.url}/`)).text();
+    const href = /<link rel="stylesheet" href="([^"]+)"/.exec(html)?.[1] ?? "";
+    expect(href).toMatch(/^\/static\/tabcrew\.css\?v=[0-9a-f]{10}$/);
+    const css = await fetch(`${t.url}${href}`);
+    expect(css.headers.get("content-type")).toContain("text/css");
+    expect(await css.text()).toContain(".nav-link");
+    const font = await fetch(`${t.url}/static/fonts/plex-sans-400.woff2`);
+    expect(font.headers.get("content-type")).toBe("font/woff2");
+    expect((await fetch(`${t.url}/static/fonts/../../package.json`)).status).toBe(404);
+  });
+
   it("only answers GET and HEAD", async () => {
     expect((await fetch(`${t.url}/privacy`, { method: "HEAD" })).status).toBe(200);
     expect((await fetch(`${t.url}/`, { method: "POST" })).status).toBe(405);

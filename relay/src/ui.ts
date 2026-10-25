@@ -3,6 +3,7 @@
  * cards, a top bar, light and dark (follows the system). One stylesheet and the fonts are served
  * from /static; pages carry no scripts.
  */
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { dirname, join } from "node:path";
@@ -35,14 +36,49 @@ code,pre{font-family:var(--mono);font-size:.8125rem}
 :not(pre)>code{padding:.05rem .35rem;border-radius:4px;background:var(--surface);border:1px solid var(--line)}
 pre{padding:.75rem 1rem;border:1px solid var(--line);border-radius:var(--radius);background:var(--surface);overflow-x:auto}
 .muted{color:var(--muted)}.small{font-size:var(--text-sm)}
-.topbar{position:sticky;top:0;z-index:10;display:flex;align-items:center;justify-content:space-between;gap:1rem;padding:.7rem 1.5rem;border-bottom:1px solid var(--line);background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(8px)}
-.brand{display:inline-flex;align-items:center;gap:.55rem;color:var(--fg);text-decoration:none;font-weight:600;font-size:.95rem}
-.brand-mark{width:1.6rem;height:1.6rem;border-radius:6px;background:var(--accent);color:var(--accent-fg);display:grid;place-items:center;font-size:.8rem;font-weight:600}
-.nav{display:flex;flex-wrap:wrap;align-items:center;gap:.15rem}
-.nav a{padding:.3rem .6rem;border-radius:var(--radius-sm);color:var(--fg);text-decoration:none;font-size:var(--text-md)}
-.nav a:hover{background:color-mix(in srgb,var(--fg) 6%,transparent)}
-.nav a[aria-current=page]{background:var(--panel);font-weight:500;box-shadow:var(--elev-1),inset 0 0 0 1px var(--line)}
-.nav form{margin:0 0 0 .4rem}
+.icon{width:1.1rem;height:1.1rem;flex:none;fill:none;stroke:currentColor;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round}
+.brand{display:inline-flex;align-items:center;gap:.6rem;color:var(--fg);text-decoration:none;font-weight:600;font-size:.95rem;letter-spacing:-.01em}
+.brand .icon{width:1.6rem;height:1.6rem;stroke-width:2}
+.brand .brand-tile{fill:var(--accent);stroke:none}
+.brand .brand-mark{stroke:var(--accent-fg);stroke-width:2}
+.sr-only{position:absolute!important;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+body.app{display:grid;grid-template-columns:15.5rem minmax(0,1fr);grid-template-rows:auto 1fr auto;background:linear-gradient(to right,var(--surface) calc(15.5rem - 1px),var(--line) calc(15.5rem - 1px) 15.5rem,var(--bg) 15.5rem)}
+body.app>.sidebar{grid-column:1;grid-row:1/-1;align-self:start}
+body.app>main,body.app>.site-footer,body.app>.topbar{grid-column:2}
+body.app>.topbar{grid-row:1}body.app>main{grid-row:2}body.app>.site-footer{grid-row:3}
+.sidebar{position:sticky;top:0;height:100vh;display:flex;flex-direction:column;background:var(--surface);border-right:1px solid var(--line);z-index:30}
+.sidebar-head{padding:1rem 1rem .75rem}
+.site-nav{flex:1;overflow-y:auto;padding:.25rem .75rem 1rem;display:grid;align-content:start;gap:.75rem}
+.nav-group{display:grid;gap:1px}
+.nav-label{margin:0 0 .25rem;padding:0 .5rem;font-size:var(--text-xs);font-weight:500;color:var(--muted);text-transform:uppercase;letter-spacing:.07em}
+.nav-link{display:flex;align-items:center;gap:.65rem;padding:.3rem .5rem;border-radius:var(--radius-sm);color:var(--fg);text-decoration:none;font-size:var(--text-md)}
+.nav-link .icon{color:var(--muted);width:1.05rem;height:1.05rem}
+.nav-link:hover{background:color-mix(in srgb,var(--fg) 6%,transparent)}
+.nav-link:hover .icon{color:var(--fg)}
+.nav-link[aria-current=page]{background:var(--panel);font-weight:500;box-shadow:var(--elev-1),inset 0 0 0 1px var(--line)}
+.nav-link[aria-current=page] .icon{color:var(--accent)}
+.sidebar-foot{border-top:1px solid var(--line);padding:.75rem .75rem 1rem;display:grid;gap:.6rem}
+.sidebar-foot form{margin:0}
+.who{display:flex;align-items:center;gap:.6rem;min-width:0;padding:0 .25rem}
+.avatar{flex:none;width:1.9rem;height:1.9rem;display:grid;place-items:center;border-radius:50%;background:var(--accent-soft);color:var(--accent);font-weight:600;font-size:var(--text-sm)}
+.who-name{font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.topbar{display:none;align-items:center;gap:.75rem;padding:.6rem 1rem;border-bottom:1px solid var(--line);background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(8px);position:sticky;top:0;z-index:20}
+.topbar.public{display:flex;padding:.75rem 1.5rem}
+.menu-button{display:inline-grid;place-items:center;width:2.25rem;height:2.25rem;border-radius:var(--radius-sm);border:1px solid var(--line-strong);background:var(--panel);color:var(--fg);cursor:pointer}
+.drawer-toggle{display:none;position:absolute;opacity:0;width:1px;height:1px;pointer-events:none}
+.drawer-toggle:focus-visible~.topbar .menu-button{outline:2px solid var(--focus);outline-offset:2px}
+.drawer-scrim{display:none}
+@media (max-width:64rem){
+body.app{display:block;background:var(--bg)}
+body.app>.topbar{display:flex}
+.drawer-toggle{display:block}
+.sidebar{position:fixed;inset:0 auto 0 0;width:min(18rem,85vw);transform:translateX(-102%);visibility:hidden;transition:transform .22s cubic-bezier(.2,.7,.2,1),visibility 0s linear .22s;box-shadow:var(--elev-2)}
+.sidebar-head{display:none}
+.site-nav{padding-top:1rem}
+.drawer-toggle:checked~.sidebar{transform:none;visibility:visible;transition:transform .22s cubic-bezier(.2,.7,.2,1),visibility 0s}
+.drawer-toggle:checked~.drawer-scrim{display:block;position:fixed;inset:0;z-index:25;background:color-mix(in srgb,#000 40%,transparent)}
+}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
 .page-head{margin-bottom:1.5rem}
 .page-desc{color:var(--muted);margin:.25rem 0 0;max-width:44rem}
 .eyebrow{font-family:var(--mono);font-size:var(--text-xs);text-transform:uppercase;letter-spacing:.1em;color:var(--accent);margin-bottom:.6rem}
@@ -61,6 +97,7 @@ pre{padding:.75rem 1rem;border:1px solid var(--line);border-radius:var(--radius)
 .list>li:first-child{border-top:0;padding-top:0}
 .list form{margin:0}
 .list>li.empty{display:block}
+.btn .icon,button .icon{width:1rem;height:1rem}
 .btn,button{display:inline-flex;align-items:center;justify-content:center;gap:.4rem;min-height:2.1rem;padding:.35rem .9rem;font:500 var(--text-md)/1.2 var(--sans);color:var(--fg);background:var(--panel);border:1px solid var(--line-strong);border-radius:var(--radius-sm);box-shadow:var(--elev-1);cursor:pointer;text-decoration:none}
 .btn:hover,button:hover{background:var(--surface);border-color:var(--input-border)}
 .btn.primary,button.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-fg)}
@@ -103,40 +140,73 @@ dl.kv>dt:first-of-type,dl.kv>dt:first-of-type+dd{border-top:0}
 .site-footer nav{display:flex;flex-wrap:wrap;gap:.5rem 1.5rem;max-width:60rem;margin:0 auto;padding-top:1rem;border-top:1px solid var(--line)}
 .site-footer a{color:var(--muted);text-decoration:none}
 .site-footer a:hover{color:var(--fg)}
-@media (max-width:40rem){.topbar{flex-wrap:wrap;padding:.6rem 1rem}main{padding:1.25rem 1rem 2rem}}
+@media (max-width:40rem){main{padding:1.25rem 1rem 2rem}}
 `;
 
-export type NavKey = "home" | "settings" | "account" | null;
+/** Changes with the stylesheet, so browsers never keep an old one (it is cached for a day). */
+export const CSS_VERSION = createHash("sha256").update(CSS).digest("hex").slice(0, 10);
+
+export type NavKey = "home" | "settings" | "account" | "privacy" | null;
+
+/** Inline icons, drawn like the mcp-gateway portal's (strokes in currentColor, 24x24). */
+const ICONS: Record<string, string> = {
+  menu: `<path d="M4 7h16M4 12h16M4 17h16"/>`,
+  signout: `<path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3M10 8l-4 4 4 4M6 12h10"/>`,
+  settings: `<path d="M4 6h9M19 6h1M4 12h3M13 12h7M4 18h11M21 18h-1"/><circle cx="16" cy="6" r="2.5"/><circle cx="10" cy="12" r="2.5"/><circle cx="17.5" cy="18" r="2.5"/>`,
+  machines: `<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/>`,
+  connections: `<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>`,
+  audit: `<path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h5M14 3l5 5h-5z"/><circle cx="16.5" cy="16.5" r="3"/><path d="M19 19l2.5 2.5"/>`,
+  external: `<path d="M14 4h6v6M20 4l-9 9M18 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4"/>`,
+  account: `<circle cx="12" cy="8" r="4"/><path d="M4 21c0-4.4 3.6-7 8-7s8 2.6 8 7"/>`,
+  home: `<path d="M4 11l8-7 8 7v8a1 1 0 0 1-1 1h-5v-6h-4v6H5a1 1 0 0 1-1-1z"/>`,
+  brand: `<rect class="brand-tile" x="1" y="1" width="22" height="22" rx="6"/><path class="brand-mark" d="M6 9h4l1.5-2.5H17a1 1 0 0 1 1 1V17a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1z"/>`,
+};
+
+function icon(name: string): string {
+  return `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">${ICONS[name] ?? ""}</svg>`;
+}
 
 export interface ShellOptions {
   readonly title: string;
   readonly body: string;
   readonly nav?: NavKey;
-  /** Signed in: shows Settings/Account links and a Sign out button (needs the CSRF token). */
-  readonly signedIn?: { readonly csrf: string } | null;
-  /** narrow: a centered single column (sign-in and error pages); legal: wide prose. */
+  /** Signed in: the sidebar shows who and a Sign out button (needs the CSRF token). */
+  readonly signedIn?: { readonly csrf: string; readonly name?: string | null } | null;
+  /** narrow: a centered single card with a slim top bar (sign-in, errors); legal: wide prose. */
   readonly layout?: "default" | "narrow" | "legal";
 }
 
+const BRAND = `<a class="brand" href="/">${icon("brand")}<span>TabCrew Online</span></a>`;
+
 export function shell(o: ShellOptions): string {
-  const link = (key: NavKey, href: string, label: string) =>
-    `<a href="${href}"${o.nav === key ? ' aria-current="page"' : ""}>${label}</a>`;
-  const nav = [
-    link("home", "/", "Home"),
-    link("settings", "/settings", "Model settings"),
-    link("account", "/account", "Browsers &amp; agents"),
-    o.signedIn
-      ? `<form method="post" action="/account/logout"><input type="hidden" name="csrf" value="${escapeHtml(o.signedIn.csrf)}"><button class="small ghost">Sign out</button></form>`
-      : "",
-  ].join("");
-  const mainClass = o.layout === "narrow" ? ' class="narrow"' : "";
-  const body = o.layout === "legal" ? `<div class="legal">${o.body}</div>` : o.body;
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="color-scheme" content="light dark"><title>${escapeHtml(o.title === "TabCrew Online" ? o.title : `${o.title} · TabCrew Online`)}</title>
-<link rel="stylesheet" href="/static/tabcrew.css"></head>
-<body><header class="topbar"><a class="brand" href="/"><span class="brand-mark" aria-hidden="true">TC</span>TabCrew Online</a><nav class="nav" aria-label="Main">${nav}</nav></header>
-<main${mainClass}>${body}</main>
-<footer class="site-footer"><nav aria-label="Footer"><a href="/privacy">Privacy</a><a href="${REPO}">Source code</a><a href="${REPO}/issues">Support</a><span>Not affiliated with Google.</span></nav></footer>
+  const title = o.title === "TabCrew Online" ? o.title : `${o.title} · TabCrew Online`;
+  const head = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><title>${escapeHtml(title)}</title>
+<link rel="stylesheet" href="/static/tabcrew.css?v=${CSS_VERSION}"></head>`;
+  const content = o.layout === "legal" ? `<div class="legal">${o.body}</div>` : o.body;
+  const footer = `<footer class="site-footer"><nav aria-label="Footer"><a href="/privacy">Privacy</a><a href="${REPO}">Source code</a><a href="${REPO}/issues">Support</a><span>Not affiliated with Google.</span></nav></footer>`;
+  if (o.layout === "narrow") {
+    return `${head}<body><header class="topbar public">${BRAND}</header><main class="narrow">${content}</main>${footer}</body></html>`;
+  }
+  const link = (key: NavKey, href: string, name: string, label: string, external = false) =>
+    `<a class="nav-link" href="${href}"${o.nav === key && key ? ' aria-current="page"' : ""}${external ? ' rel="noopener"' : ""}>${icon(name)}${label}</a>`;
+  const who = o.signedIn
+    ? `<div class="who"><span class="avatar" aria-hidden="true">${escapeHtml((o.signedIn.name ?? "?").trim().charAt(0).toUpperCase() || "?")}</span><span class="who-name">${escapeHtml(o.signedIn.name?.trim() || "Signed in")}</span></div>
+<form method="post" action="/account/logout"><input type="hidden" name="csrf" value="${escapeHtml(o.signedIn.csrf)}"><button class="ghost small" type="submit">${icon("signout")}Sign out</button></form>`
+    : `<a class="btn small block" href="/account">${icon("account")}Sign in</a>`;
+  return `${head}<body class="app">
+<input type="checkbox" id="nav-drawer" class="drawer-toggle" aria-label="Show navigation" aria-controls="sidebar">
+<header class="topbar"><label for="nav-drawer" class="menu-button" title="Menu">${icon("menu")}<span class="sr-only">Menu</span></label>${BRAND}</header>
+<aside class="sidebar" id="sidebar"><div class="sidebar-head">${BRAND}</div>
+<nav class="site-nav" aria-label="Main">
+<div class="nav-group">${link("home", "/", "home", "Home")}</div>
+<div class="nav-group"><p class="nav-label">Your account</p>${link("settings", "/settings", "settings", "Model settings")}${link("account", "/account", "machines", "Browsers &amp; agents")}</div>
+<div class="nav-group"><p class="nav-label">Help</p>${link("privacy", "/privacy", "audit", "Privacy")}${link(null, REPO, "external", "Source code", true)}${link(null, `${REPO}/issues`, "connections", "Support", true)}</div>
+</nav>
+<div class="sidebar-foot">${who}</div></aside>
+<label for="nav-drawer" class="drawer-scrim" aria-hidden="true"></label>
+<main>${content}</main>
+${footer}
 </body></html>`;
 }
 

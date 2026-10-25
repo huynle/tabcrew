@@ -18,7 +18,7 @@ export function sitePage(req: IncomingMessage, res: ServerResponse, url: URL, pu
   const html =
     url.pathname === "/"
       ? shell({ title: "TabCrew Online", nav: "home", body: home(publicUrl) })
-      : shell({ title: "TabCrew privacy policy", layout: "legal", body: PRIVACY_HTML });
+      : shell({ title: "TabCrew privacy policy", nav: "privacy", layout: "legal", body: PRIVACY_HTML });
   sendHtml(res, 200, req.method === "HEAD" ? "" : html, { headers: { "cache-control": "public, max-age=300" } });
   return true;
 }

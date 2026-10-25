@@ -202,7 +202,7 @@ export class AccountPages {
       .map((t) => t.name);
 
     if (!this.d.models.enabled) {
-      return this.send(res, "Model settings", "settings", csrf, `${head("Model settings", "")}<div class="alert warn">Account model settings are not enabled on this relay. Set the provider in each browser's TabCrew popup instead.</div>`);
+      return this.send(res, userId, "Model settings", "settings", csrf, `${head("Model settings", "")}<div class="alert warn">Account model settings are not enabled on this relay. Set the provider in each browser's TabCrew popup instead.</div>`);
     }
 
     const presetOptions = PROVIDER_PRESETS.map(
@@ -241,7 +241,7 @@ ${modelField("fallback_text_model", "Fallback text model (optional)", "Tried onc
 ${saved ? `<button class="danger" name="action" value="remove" style="margin-left:auto">Remove</button>` : ""}</div>
 </form>
 <p class="small muted">Each browser can still use its own provider: in its TabCrew popup (Online), turn on <b>Use this browser's own provider</b>. Daemon and Hub modes always use the popup's settings.</p>`;
-    this.send(res, "Model settings", "settings", csrf, body);
+    await this.send(res, userId, "Model settings", "settings", csrf, body);
   }
 
   private takeNotice(userId: string): Notice | null {
@@ -303,7 +303,7 @@ ${meta ? `<div class="small muted">${meta}</div>` : ""}</div>
     const body = `${head("Browsers & agents", "Everything signed in to your TabCrew Online account. Revoking signs it out at once; it has to sign in again to come back.")}
 <div class="grid"><div class="card"><div class="card-head"><h2>Browsers</h2><span class="muted small">${browsers.length}</span></div><ul class="list">${browserRows}</ul></div>
 <div class="card"><div class="card-head"><h2>Agents</h2><span class="muted small">${clients.length}</span></div><ul class="list">${clientRows}</ul></div></div>`;
-    this.send(res, "Browsers & agents", "account", csrf, body);
+    await this.send(res, userId, "Browsers & agents", "account", csrf, body);
   }
 
   // ---------------------------------------------------------------------------------- shared
@@ -319,9 +319,13 @@ ${meta ? `<div class="small muted">${meta}</div>` : ""}</div>
     return hmac(this.d.signingKey, `csrf|${cookie}`);
   }
 
-  private send(res: ServerResponse, title: string, nav: NavKey, csrf: string, body: string): void {
+  private async send(res: ServerResponse, userId: string, title: string, nav: NavKey, csrf: string, body: string): Promise<void> {
+    const user = await this.d.store.getUser(userId);
     // same-origin (not no-referrer): Chrome then sends the real Origin with these forms.
-    sendHtml(res, 200, shell({ title, nav, signedIn: { csrf }, body }), { forms: true, headers: { "referrer-policy": "same-origin" } });
+    sendHtml(res, 200, shell({ title, nav, signedIn: { csrf, name: user?.name || user?.email || null }, body }), {
+      forms: true,
+      headers: { "referrer-policy": "same-origin" },
+    });
   }
 
   private forbidden(res: ServerResponse, message: string): true {
