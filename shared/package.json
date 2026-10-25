@@ -1,6 +1,6 @@
 {
   "name": "@tabcrew/shared",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "private": true,
   "description": "Shared TabCrew protocol types and constants (daemon <-> extension)",
   "license": "MIT",

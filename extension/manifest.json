@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "TabCrew",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "description": "Gives your AI agents their own isolated tabs in your browser, via the local TabCrew daemon or your TabCrew Online account.",
   "permissions": [
     "debugger",

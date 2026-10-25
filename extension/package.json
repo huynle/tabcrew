@@ -1,6 +1,6 @@
 {
   "name": "@tabcrew/extension",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "private": true,
   "description": "TabCrew browser extension (MV3): session tab groups, CDP, observe/act only",
   "license": "MIT",
