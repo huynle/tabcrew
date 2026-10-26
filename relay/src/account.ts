@@ -215,7 +215,7 @@ export class AccountPages {
     const headerNames = saved ? Object.keys(saved.headers) : [];
 
     const status = saved
-      ? `<div class="card"><div class="card-head"><h2>Used by browse</h2><span class="pill ${saved.decision_model && saved.text_model ? "ok" : "warn"}">${saved.decision_model && saved.text_model ? "Ready" : "Models missing"}</span></div>
+      ? `<div class="card"><div class="card-head"><h2>Used by browse</h2><span class="pill ${saved.decision_model && saved.text_model ? "ok" : "warn"}"${saved.decision_model && saved.text_model ? ' title="Provider, key and models are set. Save &amp; test checks that they work."' : ""}>${saved.decision_model && saved.text_model ? "Set up" : "Models missing"}</span></div>
 <dl class="kv"><dt>Provider</dt><dd>${escapeHtml(new URL(saved.base_url).host)} <span class="muted mono">${escapeHtml(saved.base_url)}</span></dd>
 <dt>API key</dt><dd class="mono">…${escapeHtml(keyHint(saved.api_key) || "set")}</dd>
 <dt>Decision model</dt><dd class="mono">${escapeHtml(saved.decision_model || "—")}</dd>

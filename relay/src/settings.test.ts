@@ -95,7 +95,7 @@ describe("/settings", () => {
     expect(p.html).toContain('<datalist id="models">');
     expect(p.html).not.toContain("text-embedding-3-small");
     expect(p.html).toContain('value="typesafe/jev-1.13"');
-    expect(p.html).toContain("Ready");
+    expect(p.html).toContain("Set up");
     expect(p.html).toContain("…9876");
     expect(p.html).not.toContain(KEY);
     expect(provider.calls[0]).toMatchObject({ method: "GET", url: "https://openrouter.ai/api/v1/models" });
