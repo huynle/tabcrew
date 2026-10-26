@@ -1,6 +1,6 @@
 {
   "name": "tabcrew",
-  "version": "0.6.2",
+  "version": "0.6.3",
   "description": "TabCrew: give your AI agents their own isolated tabs in your real browser. Installs the local daemon, pairing host and MCP entries.",
   "license": "MIT",
   "type": "module",
