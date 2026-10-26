@@ -1,6 +1,6 @@
 {
   "name": "tabcrew-monorepo",
-  "version": "0.6.3",
+  "version": "0.6.4",
   "private": true,
   "description": "TabCrew: one local daemon that gives many AI agents their own isolated sessions in your real browser, with Jev-driven browse",
   "license": "MIT",
