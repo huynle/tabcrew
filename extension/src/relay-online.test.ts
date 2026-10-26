@@ -36,8 +36,14 @@ describe("BridgeRelay online mode", () => {
   it("pushes the relay URL and access token, never the daemon token", async () => {
     const offscreen = await setup().attach();
     expect(offscreen.messages()).toEqual([
-      { type: "config", token: null, port: 0, reconfigure: false, mode: "online", online: { url: "wss://tabcrew.huynle.com/ext", access_token: "tca.a" } },
+      { type: "config", token: null, port: 0, reconfigure: false, mode: "online", online: { url: "wss://tabcrew.huynle.com/ext", access_token: "tca.a", own_model: false } },
     ]);
+  });
+
+  it("passes on the browser's own-provider choice (own_model)", async () => {
+    const online = { url: "wss://tabcrew.huynle.com/ext", accessToken: "tca.a", ownModel: true };
+    const offscreen = await setup({ loadConfig: async () => ({ token: null, port: 0, mode: "online", online }) }).attach();
+    expect(offscreen.messages()[0]).toMatchObject({ mode: "online", online: { url: online.url, access_token: "tca.a", own_model: true } });
   });
 
   it("pushes online: null when signed out", async () => {
@@ -93,13 +99,38 @@ describe("OffscreenHost online config", () => {
     h.start();
     return { h, sw };
   }
-  const config = (access: string, url = "wss://tabcrew.huynle.com/ext", reconfigure = false) => ({
+  const config = (access: string, url = "wss://tabcrew.huynle.com/ext", reconfigure = false, own_model?: boolean) => ({
     type: "config",
     token: null,
     port: 0,
     reconfigure,
     mode: "online",
-    online: { url, access_token: access },
+    online: { url, access_token: access, ...(own_model !== undefined && { own_model }) },
+  });
+
+  it("announces own_model in the hello when this browser uses its own provider", async () => {
+    const { sw } = host();
+    sw.postMessage(config("tca.1", undefined, false, true));
+    await flush();
+    const ws = FakeSocket.instances.at(-1)!;
+    ws.serverOpen();
+    expect(ws.frames()[0]!.features).toContain("own_model");
+  });
+
+  it("reconnects with a new hello when the own-provider choice changes", async () => {
+    const { sw } = host();
+    sw.postMessage(config("tca.1"));
+    await flush();
+    const first = FakeSocket.instances[0]!;
+    first.serverOpen();
+    expect(first.frames()[0]!.features).not.toContain("own_model");
+    first.serverSend({ type: "welcome", protocol: 2, sessions: [] });
+    sw.postMessage(config("tca.1", undefined, false, true));
+    await flush();
+    expect(FakeSocket.instances).toHaveLength(2);
+    const second = FakeSocket.instances[1]!;
+    second.serverOpen();
+    expect(second.frames()[0]!.features).toContain("own_model");
   });
 
   it("a rotated access token keeps the connection; a new relay reconnects", async () => {

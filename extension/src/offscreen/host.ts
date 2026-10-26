@@ -151,6 +151,7 @@ export class OffscreenHost {
       previous.mode !== config.mode ||
       previous.hubPin?.secret !== config.hubPin?.secret ||
       previous.online?.url !== config.online?.url ||
+      previous.online?.ownModel !== config.online?.ownModel ||
       !previous.online !== !config.online;
     if (reconfigure || changed) {
       void this.bridge.reconfigure();
@@ -189,7 +190,10 @@ export class OffscreenHost {
 function configFrom(message: Extract<ToOffscreen, { type: "config" }>): BridgeConfig {
   if (message.mode === "online") {
     const o = message.online;
-    const online = o && typeof o.url === "string" && typeof o.access_token === "string" ? { url: o.url, accessToken: o.access_token } : null;
+    const online =
+      o && typeof o.url === "string" && typeof o.access_token === "string"
+        ? { url: o.url, accessToken: o.access_token, ownModel: o.own_model === true }
+        : null;
     return { token: null, port: 0, mode: "online", online };
   }
   if (message.mode !== "hub") return { token: message.token, port: message.port, mode: "daemon" };

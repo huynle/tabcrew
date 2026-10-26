@@ -150,7 +150,9 @@ export class BridgeRelay {
       this.post({ type: "config", token: null, port: config.port, reconfigure, mode: "hub", hub_pin: config.hubPin ?? null });
     } else if (config.mode === "online") {
       // Never the daemon token: only the relay URL and a short-lived access token.
-      const online = config.online ? { url: config.online.url, access_token: config.online.accessToken } : null;
+      const online = config.online
+        ? { url: config.online.url, access_token: config.online.accessToken, own_model: config.online.ownModel === true }
+        : null;
       this.post({ type: "config", token: null, port: 0, reconfigure, mode: "online", online });
     } else {
       this.post({ type: "config", token: config.token, port: config.port, reconfigure });
