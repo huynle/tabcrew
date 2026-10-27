@@ -16,7 +16,7 @@ import { bearer, readBody, sendJson } from "./http.js";
 import { sitePage } from "./site.js";
 import { serveStatic } from "./ui.js";
 import { AccountModels } from "./modelSettings.js";
-import type { HttpClient } from "./egress.js";
+import { aliasedClient, publicHttpsClient, type HttpClient, type ProviderAliases } from "./egress.js";
 import { clientIp, DEFAULT_LIMITS, TokenBucket, type Limits } from "./limits.js";
 import { createRelayProtocolServer } from "./mcpServer.js";
 import type { Store } from "./store/types.js";
@@ -47,6 +47,8 @@ export interface RelayOptions {
   readonly secretsKey?: Buffer | null;
   /** Outbound HTTPS to model providers (tests inject a fake; default: public addresses only). */
   readonly modelHttp?: HttpClient;
+  /** Operator-listed provider hosts reached on the relay's own network (RELAY_PROVIDER_ALIASES). */
+  readonly providerAliases?: ProviderAliases;
   /** Tool calls and MCP replies at least this slow are logged at info (default 10 s). */
   readonly slowCallMs?: number;
 }
@@ -93,7 +95,8 @@ export async function startRelay(o: RelayOptions): Promise<RunningRelay> {
   const slowCallMs = o.slowCallMs ?? 10_000;
   /** `${userId}|${clientId}` -> until (ms): revoked clients whose access tokens may not have expired yet. */
   const revokedClients = new Map<string, number>();
-  const models = new AccountModels({ store: o.store, key: o.secretsKey ?? null, http: o.modelHttp, now });
+  const providerAliases: ProviderAliases = o.providerAliases ?? new Map();
+  const models = new AccountModels({ store: o.store, key: o.secretsKey ?? null, http: o.modelHttp ?? aliasedClient(providerAliases, publicHttpsClient()), now });
   const tenants = new TenantManager({
     version,
     models,
@@ -321,6 +324,7 @@ export async function startRelay(o: RelayOptions): Promise<RunningRelay> {
     tenants,
     signingKey: o.signingKey,
     models,
+    providerAliases,
     now,
     refreshTtlMs: 30 * 24 * 3600 * 1000,
     revokeClient(userId, clientId) {

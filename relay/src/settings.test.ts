@@ -30,9 +30,9 @@ function fakeProvider() {
   return { http, calls };
 }
 
-async function start(withKey = true) {
+async function start(withKey = true, extra: Parameters<typeof startTestRelay>[0] = {}) {
   const provider = fakeProvider();
-  t = await startTestRelay({ secretsKey: withKey ? randomBytes(32) : null, modelHttp: provider.http });
+  t = await startTestRelay({ secretsKey: withKey ? randomBytes(32) : null, modelHttp: provider.http, ...extra });
   return provider;
 }
 
@@ -75,6 +75,32 @@ async function submit(cookie: string, form: Record<string, string>) {
 }
 
 describe("/settings", () => {
+  it("keeps a failed model load visible next to Models, and explains private addresses", async () => {
+    t = await startTestRelay({
+      secretsKey: randomBytes(32),
+      modelHttp: async () => {
+        throw new (await import("./egress.js")).EgressError("llm.lan.example resolves to a non-public address");
+      },
+    });
+    const cookie = await webLogin(ALICE);
+    await submit(cookie, { preset: "custom", base_url: "https://llm.lan.example/v1", api_key: KEY, action: "load" });
+    const p = await page(cookie); // after the one-time notice is gone
+    expect(p.html).toContain("Couldn't load models from llm.lan.example");
+    expect(p.html).toContain("private network address");
+    expect(p.html).toContain("browser's own provider");
+    expect(p.html).toContain("You can still type model ids");
+  });
+
+  it("lists the provider hosts this relay can reach on its own network", async () => {
+    await start(true, { providerAliases: new Map([["api.ai.huynle.com", "http://omniroute.omniroute.svc.cluster.local"]]) });
+    const cookie = await webLogin(ALICE);
+    let p = await page(cookie);
+    expect(p.html).toContain("Also allowed on this relay: <code>api.ai.huynle.com</code>");
+    p = await submit(cookie, { preset: "custom", base_url: "https://api.ai.huynle.com/v1", api_key: KEY });
+    expect(p.html).toContain("reached on the relay's own network");
+    expect(p.html).not.toContain("omniroute.omniroute.svc");
+  });
+
   it("asks to sign in, and signing in returns to /settings", async () => {
     await start();
     const res = await fetch(`${t.url}/settings`);

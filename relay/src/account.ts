@@ -4,6 +4,7 @@ import { V2_EXT_FEATURE_ACCOUNT_MODEL, V2_EXT_FEATURE_OWN_MODEL } from "@tabcrew
 import { ACCOUNT_COOKIE, EXTENSION_CLIENT_ID, type AuthServer } from "./auth/server.js";
 import type { Provider } from "./auth/providers.js";
 import { hmac, safeEqual } from "./crypto.js";
+import { aliasedHost, type ProviderAliases } from "./egress.js";
 import { escapeHtml, readBody, sendHtml } from "./http.js";
 import { checkAccountSettings, type AccountModels } from "./modelSettings.js";
 import type { Store } from "./store/types.js";
@@ -18,11 +19,20 @@ export interface AccountDeps {
   readonly tenants: TenantManager;
   readonly signingKey: Buffer;
   readonly models: AccountModels;
+  /** Provider hosts the operator routes inside the relay's network (shown as allowed; origins never shown). */
+  readonly providerAliases?: ProviderAliases;
   /** Refresh token lifetime: a grant's last sign-in or refresh was this long before its expiry. */
   readonly refreshTtlMs: number;
   /** End a client's access at once: its access tokens stop working and its MCP sessions close. */
   revokeClient(userId: string, clientId: string): void;
   readonly now?: () => number;
+}
+
+/** Provider errors in plain words: a private address gets the way around it. */
+function explain(error: string): string {
+  const text = error.replace(/\s*$/, "").replace(/([^.])$/, "$1.");
+  if (!/non-public address|not a public address/.test(text)) return text;
+  return `${text.replace(/(resolves to|is) (a )?non-public address|is not a public address/, "is a private network address")} The relay only reaches public addresses; for a provider on your own network, use a browser's own provider (in its TabCrew popup, Online).`;
 }
 
 function cookieValue(req: IncomingMessage, name: string): string | null {
@@ -49,7 +59,8 @@ const hidden = (name: string, value: string) => `<input type="hidden" name="${na
  */
 export class AccountPages {
   private readonly notices = new Map<string, Notice>();
-  private readonly modelLists = new Map<string, { at: number; baseUrl: string; models: string[] }>();
+  /** The last Load models per user: the models, or why loading failed (shown until the next load or 30 min). */
+  private readonly modelLists = new Map<string, { at: number; baseUrl: string; models: string[]; error?: string }>();
   private readonly now: () => number;
 
   constructor(private readonly d: AccountDeps) {
@@ -155,7 +166,8 @@ export class AccountPages {
       const list = await this.d.models.listModels(settings);
       if (!list.ok) {
         await this.d.models.save(userId, settings);
-        return this.notice(userId, "error", `Saved, but the models could not be loaded: ${list.error}`);
+        this.modelLists.set(userId, { at: this.now(), baseUrl: settings.base_url, models: [], error: list.error });
+        return this.notice(userId, "error", "Saved, but the models could not be loaded. See Models below.");
       }
       this.modelLists.set(userId, { at: this.now(), baseUrl: settings.base_url, models: list.models });
       const rec = recommendedModels(settings.base_url);
@@ -183,7 +195,7 @@ export class AccountPages {
     await this.d.models.save(userId, settings);
     if (action === "test") {
       const result = await this.d.models.test(settings);
-      return this.notice(userId, result.ok ? "ok" : "error", result.ok ? `Saved and tested: ${result.message}` : `Saved, but the test failed: ${result.message}`);
+      return this.notice(userId, result.ok ? "ok" : "error", result.ok ? `Saved and tested: ${result.message}` : `Saved, but the test failed: ${explain(result.message)}`);
     }
     const missing = !settings.decision_model || !settings.text_model;
     this.notice(userId, missing ? "warn" : "ok", missing ? "Saved. Choose a decision model and a text model before browse can run." : "Saved. Every browser of this account uses these settings.");
@@ -194,7 +206,13 @@ export class AccountPages {
     const saved = await this.d.models.get(userId);
     const notice = this.takeNotice(userId);
     const list = this.modelLists.get(userId);
-    const models = list && saved && list.baseUrl === saved.base_url && this.now() - list.at < MODEL_LIST_MS ? list.models : [];
+    const current = list && saved && list.baseUrl === saved.base_url && this.now() - list.at < MODEL_LIST_MS ? list : null;
+    const models = current?.models ?? [];
+    const aliases = this.d.providerAliases ?? new Map<string, string>();
+    const viaAlias = saved ? aliasedHost(aliases, saved.base_url) : null;
+    const loadError = current?.error
+      ? `<div class="alert error" role="status">Couldn't load models from ${escapeHtml(new URL(current.baseUrl).host)}: ${escapeHtml(explain(current.error))} You can still type model ids below and click Save.</div>`
+      : "";
     const presetId = saved ? presetFor(saved.base_url) : PROVIDER_PRESETS[0]!.id;
     const ownBrowsers = this.d.tenants
       .ofUser(userId)
@@ -216,7 +234,7 @@ export class AccountPages {
 
     const status = saved
       ? `<div class="card"><div class="card-head"><h2>Used by browse</h2><span class="pill ${saved.decision_model && saved.text_model ? "ok" : "warn"}"${saved.decision_model && saved.text_model ? ' title="Provider, key and models are set. Save &amp; test checks that they work."' : ""}>${saved.decision_model && saved.text_model ? "Set up" : "Models missing"}</span></div>
-<dl class="kv"><dt>Provider</dt><dd>${escapeHtml(new URL(saved.base_url).host)} <span class="muted mono">${escapeHtml(saved.base_url)}</span></dd>
+<dl class="kv"><dt>Provider</dt><dd>${escapeHtml(new URL(saved.base_url).host)} <span class="muted mono">${escapeHtml(saved.base_url)}</span>${viaAlias ? `<div class="small muted">Allowed by this relay's operator: reached on the relay's own network.</div>` : ""}</dd>
 <dt>API key</dt><dd class="mono">…${escapeHtml(keyHint(saved.api_key) || "set")}</dd>
 <dt>Decision model</dt><dd class="mono">${escapeHtml(saved.decision_model || "—")}</dd>
 <dt>Text model</dt><dd class="mono">${escapeHtml(saved.text_model || "—")}</dd>
@@ -230,10 +248,10 @@ ${status}
 <form method="post" action="/settings" class="card" autocomplete="off">${hidden("csrf", csrf)}
 <div class="card-head"><h2>Provider</h2></div>
 <div class="row"><label class="field">Provider<select name="preset">${presetOptions}</select><span class="hint">Any OpenAI-compatible provider on the public internet.</span></label>
-<label class="field">Base URL (Custom only)<input type="url" name="base_url" value="${escapeHtml(saved && presetId === "custom" ? saved.base_url : "")}" placeholder="https://api.example.com/v1" spellcheck="false"><span class="hint">https only. Private or LAN addresses can't be reached from the relay; use a browser's own provider for those.</span></label></div>
+<label class="field">Base URL (Custom only)<input type="url" name="base_url" value="${escapeHtml(saved && presetId === "custom" ? saved.base_url : "")}" placeholder="https://api.example.com/v1" spellcheck="false"><span class="hint">https only. Private or LAN addresses can't be reached from the relay; use a browser's own provider for those.${aliases.size ? ` Also allowed on this relay: ${[...aliases.keys()].map((h) => `<code>${escapeHtml(h)}</code>`).join(", ")}.` : ""}</span></label></div>
 <label class="field">API key<input type="password" name="api_key" placeholder="${saved ? `Saved (…${escapeHtml(keyHint(saved.api_key))}). Leave empty to keep it.` : "Paste the provider's API key"}" spellcheck="false"><span class="hint">Write-only: it is never shown again.</span></label>
 <label class="field">Extra headers (optional)<textarea name="headers" rows="2" placeholder="OpenAI-Organization: org-123" spellcheck="false"></textarea><span class="hint">One "Name: value" per line. ${headerNames.length ? `Saved: ${headerNames.map((n) => `<code>${escapeHtml(n)}</code>`).join(", ")}; leave empty to keep them. <label style="display:inline-flex;gap:.3rem;align-items:center"><input type="checkbox" name="clear_headers" value="1"> remove saved headers</label>` : "Authorization, Host, Cookie and Content-Type are set by TabCrew."}</span></label>
-<h3>Models</h3>${datalist}
+<h3>Models</h3>${loadError}${datalist}
 <div class="row">${modelField("decision_model", "Decision model", "Picks each browse step. Use a fast model that reliably returns JSON.", saved?.decision_model ?? "")}
 ${modelField("text_model", "Text model", "Writes the values browse types. A small, cheap model is fine.", saved?.text_model ?? "")}
 ${modelField("fallback_text_model", "Fallback text model (optional)", "Tried once if the text model fails.", saved?.fallback_text_model ?? "")}</div>

@@ -6,6 +6,10 @@
  *   RELAY_SIGNING_KEY       hex, >= 32 bytes: signs access tokens (required)
  *   RELAY_SECRETS_KEY       hex, exactly 32 bytes: encrypts account model settings (API keys). Optional:
  *                           without it /settings is off and browsers use their own provider.
+ *   RELAY_PROVIDER_ALIASES  optional, comma-separated host=origin: provider hosts the relay reaches on its
+ *                           own network, e.g. api.example.com=http://llm.llm.svc.cluster.local. Users still
+ *                           type https://api.example.com/...; only these exact hosts skip the public-address
+ *                           check (same path, no redirects). The network policy must allow the origin.
  *   DATABASE_URL            Postgres connection string; or RELAY_STORE=memory for local runs
  *   GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET, GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET (at least one pair)
  *   RELAY_TRUST_PROXY=1     behind a reverse proxy (ingress): client IPs from X-Forwarded-For
@@ -15,6 +19,7 @@
  */
 import { log } from "@tabcrew/daemon/dist/log.js";
 import { githubProvider, googleProvider, type Provider } from "./auth/providers.js";
+import { parseProviderAliases } from "./egress.js";
 import { DEFAULT_LIMITS, type Limits } from "./limits.js";
 import { startRelay } from "./server.js";
 import { MemoryStore } from "./store/memory.js";
@@ -33,6 +38,13 @@ if (!/^[0-9a-fA-F]{64,}$/.test(keyHex)) fail("RELAY_SIGNING_KEY must be at least
 const secretsHex = env.RELAY_SECRETS_KEY?.trim() ?? "";
 if (secretsHex && !/^[0-9a-fA-F]{64}$/.test(secretsHex)) fail("RELAY_SECRETS_KEY must be exactly 32 bytes of hex (openssl rand -hex 32)");
 const secretsKey = secretsHex ? Buffer.from(secretsHex, "hex") : null;
+
+let providerAliases: Map<string, string>;
+try {
+  providerAliases = parseProviderAliases(env.RELAY_PROVIDER_ALIASES ?? "");
+} catch (err) {
+  fail((err as Error).message);
+}
 
 const providers: Provider[] = [];
 if (env.GITHUB_CLIENT_ID && env.GITHUB_CLIENT_SECRET) {
@@ -67,6 +79,7 @@ const relay = await startRelay({
   store,
   signingKey: Buffer.from(keyHex, "hex"),
   secretsKey,
+  providerAliases,
   providers,
   publicUrl,
   host: env.RELAY_HOST || "0.0.0.0",
@@ -75,6 +88,7 @@ const relay = await startRelay({
   trustProxy: env.RELAY_TRUST_PROXY === "1",
 });
 log.info(`sign-in providers: ${providers.map((p) => p.id).join(", ")}; store: ${env.RELAY_STORE === "memory" ? "memory" : "postgres"}; account model settings: ${secretsKey ? "on" : "off (no RELAY_SECRETS_KEY)"}`);
+if (providerAliases.size) log.info(`provider aliases (relay network): ${[...providerAliases].map(([h, o]) => `${h} -> ${o}`).join(", ")}`);
 
 let stopping = false;
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
