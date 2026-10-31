@@ -124,7 +124,7 @@ describe("tabcrew setup", () => {
       description: expect.stringContaining("TabCrew"),
       path: wrapper,
       type: "stdio",
-      allowed_origins: [`chrome-extension://${TABCREW_EXTENSION_IDS.dev}/`],
+      allowed_origins: [`chrome-extension://${TABCREW_EXTENSION_IDS.dev}/`, "chrome-extension://bahebfheemnjhfnelblbiejbjljapgpa/"],
     });
     expect(existsSync(join(support, "BraveSoftware", "Brave-Browser", "NativeMessagingHosts", "com.tabcrew.pair.json"))).toBe(true);
     expect(existsSync(join(support, "Microsoft Edge"))).toBe(false);

@@ -95,4 +95,10 @@ describe("pair host", () => {
     expect(originAllowed(null)).toBe(false);
     expect(originAllowed("chrome-extension://evil/")).toBe(false);
   });
+
+  it("allows the Chrome Web Store build as well as the dev build", () => {
+    expect(originAllowed("chrome-extension://bahebfheemnjhfnelblbiejbjljapgpa/")).toBe(true);
+    expect(originAllowed(ORIGIN)).toBe(true);
+    expect(originAllowed(`chrome-extension://${"b".repeat(32)}/`)).toBe(false);
+  });
 });

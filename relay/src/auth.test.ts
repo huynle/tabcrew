@@ -283,6 +283,17 @@ describe("extension client", () => {
     expect(res.status).toBe(400);
   });
 
+  it("allows the published Chrome Web Store extension ID's chromiumapp.org redirect by default", async () => {
+    // startTestRelay passes no extensionOrigins, so this is the production default allowlist.
+    const { challenge } = pkce();
+    const redirectUri = "https://bahebfheemnjhfnelblbiejbjljapgpa.chromiumapp.org/online";
+    const res = await authorize(t.url, { clientId: "tabcrew-extension", redirectUri, challenge });
+    expect(res.status).toBe(302);
+    expect(res.location?.origin).toBe("https://bahebfheemnjhfnelblbiejbjljapgpa.chromiumapp.org");
+    expect(res.location?.pathname).toBe("/online");
+    expect(res.location?.searchParams.get("code")).toBeTruthy();
+  });
+
   it("extension tokens cannot call /mcp", async () => {
     const ext = await extLogin(t);
     const res = await fetch(`${t.url}/mcp`, {

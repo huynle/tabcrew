@@ -17,15 +17,15 @@ export interface TabCrewExtensionIds {
   /** Fixed ID of unpacked development builds (from the public `key` in extension/dev-key.pub). */
   readonly dev: string;
   /**
-   * PLACEHOLDER: the Chrome Web Store assigns this ID on first publication. Set it here once known;
-   * until then only the dev ID can pair.
+   * ID the Chrome Web Store assigned to the published extension. Null (or anything that is not a
+   * 32-letter a-p ID) is skipped, so only the dev ID can pair.
    */
   readonly store: string | null;
 }
 
 export const TABCREW_EXTENSION_IDS: TabCrewExtensionIds = {
   dev: "aejgcpbbemekfbmmkabpbgdkgmddfamo",
-  store: null,
+  store: "bahebfheemnjhfnelblbiejbjljapgpa",
 };
 
 /** Every known extension ID (placeholders skipped). */
@@ -55,8 +55,8 @@ export function isTabcrewExtensionOrigin(origin: unknown, allowed: readonly stri
   return normalized !== null && allowed.some((o) => normalizeOrigin(o) === normalized);
 }
 
-/** PLACEHOLDER until the extension is published on the Chrome Web Store. */
-export const CHROME_WEB_STORE_URL = "https://chromewebstore.google.com/detail/tabcrew/<pending>";
+/** The extension's Chrome Web Store listing. */
+export const CHROME_WEB_STORE_URL = "https://chromewebstore.google.com/detail/tabcrew/bahebfheemnjhfnelblbiejbjljapgpa";
 
 /** Message the extension sends to the pairing host, and its replies. */
 export type PairRequest = { readonly type: "get_token" };

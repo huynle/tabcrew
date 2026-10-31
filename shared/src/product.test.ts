@@ -1,7 +1,10 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { TABCREW_EXTENSION_IDS, tabcrewExtensionIds, tabcrewExtensionOrigins } from "./product.js";
+import { CHROME_WEB_STORE_URL, TABCREW_EXTENSION_IDS, tabcrewExtensionIds, tabcrewExtensionOrigins } from "./product.js";
+
+/** The ID the Chrome Web Store assigned to the published TabCrew extension. */
+const STORE_ID = "bahebfheemnjhfnelblbiejbjljapgpa";
 
 /** Chrome's extension ID: sha256 of the DER SubjectPublicKeyInfo, first 32 hex digits mapped 0-f → a-p. */
 function extensionIdFromKey(base64Spki: string): string {
@@ -21,8 +24,18 @@ describe("TabCrew extension IDs", () => {
     expect(Buffer.from(key.trim(), "base64").length).toBeLessThan(400);
   });
 
-  it("skips the unset store placeholder", () => {
-    expect(tabcrewExtensionIds()).toEqual([TABCREW_EXTENSION_IDS.dev]);
+  it("allows both the published Chrome Web Store ID and the dev ID", () => {
+    expect(TABCREW_EXTENSION_IDS.store).toBe(STORE_ID);
+    expect(tabcrewExtensionIds()).toEqual([TABCREW_EXTENSION_IDS.dev, STORE_ID]);
+    expect(tabcrewExtensionOrigins()).toEqual([
+      "chrome-extension://aejgcpbbemekfbmmkabpbgdkgmddfamo/",
+      `chrome-extension://${STORE_ID}/`,
+    ]);
+    expect(CHROME_WEB_STORE_URL).toBe(`https://chromewebstore.google.com/detail/tabcrew/${STORE_ID}`);
+  });
+
+  it("skips an unset or malformed store placeholder", () => {
+    expect(tabcrewExtensionIds({ dev: TABCREW_EXTENSION_IDS.dev, store: null })).toEqual([TABCREW_EXTENSION_IDS.dev]);
     expect(tabcrewExtensionOrigins({ dev: TABCREW_EXTENSION_IDS.dev, store: "b".repeat(32) })).toEqual([
       `chrome-extension://${TABCREW_EXTENSION_IDS.dev}/`,
       `chrome-extension://${"b".repeat(32)}/`,
@@ -50,6 +63,8 @@ describe("extension origin checks (hub WebSocket Origin)", () => {
     const { isTabcrewExtensionOrigin } = await import("./product.js");
     expect(isTabcrewExtensionOrigin(dev)).toBe(true);
     expect(isTabcrewExtensionOrigin(`${dev}/`)).toBe(true);
+    expect(isTabcrewExtensionOrigin(`chrome-extension://${STORE_ID}`)).toBe(true);
+    expect(isTabcrewExtensionOrigin(`chrome-extension://${STORE_ID}/`)).toBe(true);
     expect(isTabcrewExtensionOrigin(`chrome-extension://${"b".repeat(32)}`)).toBe(false);
     expect(isTabcrewExtensionOrigin(`${dev}/popup.html`)).toBe(false);
     expect(isTabcrewExtensionOrigin(`${dev}.evil.example`)).toBe(false);

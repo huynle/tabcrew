@@ -152,6 +152,7 @@ describe("extension bridge", () => {
     expect(await attempt({ origin: "file://" })).toBe("http 401");
     expect(await attempt({ host: "evil.example:8771" })).toBe("http 401");
     expect(await attempt({ origin: "chrome-extension://aejgcpbbemekfbmmkabpbgdkgmddfamo" })).toBe("open");
+    expect(await attempt({ origin: "chrome-extension://bahebfheemnjhfnelblbiejbjljapgpa" })).toBe("open");
     expect(await attempt({})).toBe("open");
   });
 
