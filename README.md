@@ -24,8 +24,8 @@ Is your Chrome managed by your company, with native messaging blocked? Or do you
    npx tabcrew setup
    ```
 
-2. **Install the extension** from the Chrome Web Store: *listing pending review* (link will appear here).
-   Until the store listing is live, install it manually: download `tabcrew-extension-unpacked-<version>.zip` from the [latest release](https://github.com/huynle/tabcrew/releases/latest), unzip it to a permanent folder, open `chrome://extensions`, turn on **Developer mode**, choose **Load unpacked** and select that folder. It pairs automatically.
+2. **Install the extension** from the Chrome Web Store: [TabCrew](https://chromewebstore.google.com/detail/tabcrew/bahebfheemnjhfnelblbiejbjljapgpa).
+   For development only, you can instead load an unpacked build: download `tabcrew-extension-unpacked-<version>.zip` from the [latest release](https://github.com/huynle/tabcrew/releases/latest), unzip it to a permanent folder, open `chrome://extensions`, turn on **Developer mode**, choose **Load unpacked** and select that folder. Either build pairs automatically.
 
 3. **Check:** the extension pairs with the daemon automatically (no token to copy) and its popup shows **connected**. Run `npx tabcrew doctor` any time.
 
@@ -69,7 +69,7 @@ OpenCode ──stdio──▶ tabcrew mcp ──Unix socket──▶ TabCrew hub
    npm install && npm run build      # writes cli/dist/ and extension/dist/
    ```
 
-2. **Load the extension.** Open `chrome://extensions`, turn on **Developer mode**, choose **Load unpacked** and select `extension/dist`. The release's `tabcrew-extension-unpacked-<version>.zip` also works. The hub only accepts the extension IDs it knows, and this build always has the fixed ID `aejgcpbbemekfbmmkabpbgdkgmddfamo`.
+2. **Load the extension.** Open `chrome://extensions`, turn on **Developer mode**, choose **Load unpacked** and select `extension/dist`. The release's `tabcrew-extension-unpacked-<version>.zip` also works. The hub only accepts the extension IDs it knows: the Chrome Web Store build (`bahebfheemnjhfnelblbiejbjljapgpa`) and this unpacked build, which always has the fixed dev ID `aejgcpbbemekfbmmkabpbgdkgmddfamo`.
 
 3. **Add TabCrew to OpenCode** as a local (stdio) server, using the absolute path of your checkout (`~/.config/opencode/opencode.json[c]`):
 
@@ -254,7 +254,7 @@ just install                 # npm install && npm run build
 just setup-dev               # tabcrew setup --from-source $(pwd): launchd runs daemon/dist/index.js
 ```
 
-Load the extension: open `chrome://extensions`, enable Developer mode, choose **Load unpacked** and select `extension/dist`. Development builds carry a public `key` in their manifest, so their ID is always `aejgcpbbemekfbmmkabpbgdkgmddfamo` and the pairing host accepts them. `npm run build:store -w extension` writes `extension/dist-store/` and `extension/tabcrew-extension-<version>.zip` without `key` for the Chrome Web Store; once the store assigns an ID, add it to `TABCREW_EXTENSION_IDS.store` in `shared/src/product.ts` and rerun `tabcrew setup` (or `update`) so the host manifest allows it.
+Load the extension: open `chrome://extensions`, enable Developer mode, choose **Load unpacked** and select `extension/dist`. Development builds carry a public `key` in their manifest, so their ID is always `aejgcpbbemekfbmmkabpbgdkgmddfamo`. `npm run build:store -w extension` writes `extension/dist-store/` and `extension/tabcrew-extension-<version>.zip` without `key` for the Chrome Web Store, which assigned the ID `bahebfheemnjhfnelblbiejbjljapgpa` (`TABCREW_EXTENSION_IDS.store` in `shared/src/product.ts`). The pairing host, the hub and the Online relay accept both IDs; rerun `tabcrew setup` (or `update`) after upgrading so the host manifest allows the store ID.
 
 `node daemon/dist/index.js` runs the daemon in the foreground; `node daemon/dist/index.js <command>` runs any `tabcrew` command from the checkout.
 

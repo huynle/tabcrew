@@ -64,7 +64,7 @@ Copy from `store/permissions.md`:
 
 The store assigns a permanent 32-letter item ID (visible in the dashboard and in the item URL).
 
-1. [ ] Put the ID into `shared/src/product.ts`:
+1. [x] Put the ID into `shared/src/product.ts`:
    ```ts
    export const TABCREW_EXTENSION_IDS: TabCrewExtensionIds = {
      dev: "aejgcpbbemekfbmmkabpbgdkgmddfamo",
@@ -72,7 +72,7 @@ The store assigns a permanent 32-letter item ID (visible in the dashboard and in
    };
    export const CHROME_WEB_STORE_URL = "https://chromewebstore.google.com/detail/tabcrew/<the 32-letter ID>";
    ```
-2. [ ] Replace the "Chrome Web Store listing pending" placeholder links in `README.md` and `cli/README.md` with the store URL.
+2. [x] Replace the "Chrome Web Store listing pending" placeholder links in `README.md` and `cli/README.md` with the store URL.
 3. [ ] Release a new CLI version so `tabcrew setup` registers the store ID in the pairing host's `allowed_origins` (until then, store installs cannot pair automatically; users can still paste the token from `npx tabcrew token` under the popup's **Advanced** section):
    ```sh
    node scripts/bump-version.mjs 0.4.1
